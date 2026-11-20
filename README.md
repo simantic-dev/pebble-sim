@@ -1,3 +1,14 @@
+<!-- simantic-banner -->
+> **Run this firmware with no hardware.** [Simantic](https://simantic.com) simulates the whole board, peripherals, sensors and buses included. Try it free at **[simantic.com](https://simantic.com)**, or run it locally: `curl -fsSL https://simantic.com/install | sh`
+
+## This fork: PebbleOS on a simulated Pebble 2 Duo
+
+Simantic's fork of [coredevices/PebbleOS](https://github.com/coredevices/PebbleOS). This tree, unmodified, boots on a simulated Pebble 2 Duo, pairs with a scripted phone over Bluetooth LE and shows a notification. **[SIMULATION.md](SIMULATION.md)** covers how to run it and what is real and what is simulated.
+
+![The X notification on the watch, then PebbleOS booting, pairing with the phone and receiving it](docs/screens/demo.gif)
+
+---
+
 <p align="center">
   <img src="docs/_static/images/logo.svg" alt="PebbleOS" width="320">
 </p>

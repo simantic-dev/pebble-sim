@@ -70,3 +70,5 @@ artifacts/
 .claude/settings.local.json
 .envrc
 .direnv
+# simulation demo (SIMULATION.md)
+/out/
