@@ -1,0 +1,14 @@
+# Pebble 2 Duo: Core Devices' shipping asterix bootloader at 0x0, then PebbleOS; the system resource pack
+# preloaded into the QSPI NOR's SYSTEM_RESOURCES_BANK_0 (offset 0x200000; the model maps the NOR at 0x70000000).
+# The NOR starts erased, so every run is a first boot: PebbleOS formats its filesystem (about 11 virtual s).
+machines:
+  watch:
+    mcu: NRF52840QIAA
+    overlay: overlay.board
+    elf: ../out/pebbleos.elf
+    preload: ["../out/boot.bin@0x0", "../out/resources.bin@0x70200000"]
+media:
+  - type: ble
+    connect: [watch.radio, watch.phone]
+    pcap: ../out/ble.pcap
+timeout: 34

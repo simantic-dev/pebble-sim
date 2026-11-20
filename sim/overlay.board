@@ -1,0 +1,64 @@
+// Core Devices Pebble 2 Duo ("asterix", nRF52840), wired as PebbleOS boards/asterix/asterix.dts describes it.
+pmic: I2C.ScriptedI2cSlave @ twi1 0x6b
+    file: "peers/i2c/npm1300.py"
+    numberOfGpios: 1
+    0 -> gpio1@12
+
+// Sharp LS013B7DH01 144x168 memory LCD on SPIM3: SCK P0.06, MOSI P0.08, CS P1.03 (active high),
+// EXTCOMIN from the RTC2 PWM on P1.15.
+disp: SPI.ScriptedSpiSlave @ spim3 0
+    file: "peers/spi/sharp_memlcd.py"
+    numberOfGpios: 3
+    config: "{\"width\": 144, \"height\": 168, \"png_out\": \"out/lcd.png\", \"frames_dir\": \"out/frames\"}"
+
+gpio1:
+    3 -> disp@1
+    15 -> disp@2
+
+// GigaDevice GD25LQ255E, 32 MB (JEDEC c8 60 19), on QSPI: SCK P0.19, CS P0.17, IO P0.20-23.
+qspi:
+    jedecId: 0xC86019
+    size: 0x2000000
+
+// TWIM0 (SCL P0.25, SDA P0.11) sensors.
+als: I2C.ScriptedI2cSlave @ twi0 0x44
+    file: "peers/i2c/opt3001.py"
+
+// LSM6DSO IMU (peers/i2c/lsm6dso.py): INT1 on P1.13 (asterix.dts), INT2 not wired. Level and still by default.
+imu: I2C.ScriptedI2cSlave @ twi0 0x6a
+    file: "peers/i2c/lsm6dso.py"
+    numberOfGpios: 2
+    0 -> gpio1@13
+
+// MMC5603NJ magnetometer (peers/i2c/mmc5603nj.py).
+mag: I2C.ScriptedI2cSlave @ twi0 0x30
+    file: "peers/i2c/mmc5603nj.py"
+
+// DRV2604 haptic driver (peers/i2c/drv2604.py); EN on P0.2.
+vibe: I2C.ScriptedI2cSlave @ twi0 0x5a
+    file: "peers/i2c/drv2604.py"
+    numberOfGpios: 1
+
+gpio0:
+    2 -> vibe@0
+
+// DA7212 codec (peers/i2c/da7212.py): PLL status from the 4 MHz MCLK.
+codec: I2C.ScriptedI2cSlave @ twi0 0x1a
+    file: "peers/i2c/da7212.py"
+
+
+// Buttons Back/Up/Select/Down on P0.28-31, active low with the pad pull-ups (gpio-keys in asterix.dts).
+// Lines are released when idle; each press holds the line low for 150 ms. Boot reaches the launcher at
+// about 12.6 s (first-boot filesystem format), so presses start at 14 s. Up at 25.8 s is the check mark on the phone's pairing request; the run ends on the notification card.
+buttons: Scripted.ScriptedGpioPeer @ none
+    file: "peers/gpio/pin_script.py"
+    config: "{\"holds\": [{\"line\": 0, \"at_ms\": 14000, \"for_ms\": 150, \"level\": 0}, {\"line\": 2, \"at_ms\": 16000, \"for_ms\": 150, \"level\": 0}, {\"line\": 3, \"at_ms\": 17000, \"for_ms\": 150, \"level\": 0}, {\"line\": 3, \"at_ms\": 17800, \"for_ms\": 150, \"level\": 0}, {\"line\": 1, \"at_ms\": 18600, \"for_ms\": 150, \"level\": 0}, {\"line\": 2, \"at_ms\": 19400, \"for_ms\": 150, \"level\": 0}, {\"line\": 0, \"at_ms\": 21000, \"for_ms\": 150, \"level\": 0}, {\"line\": 0, \"at_ms\": 22000, \"for_ms\": 150, \"level\": 0}, {\"line\": 1, \"at_ms\": 25800, \"for_ms\": 150, \"level\": 0}]}"
+    numberOfGpios: 4
+    0 -> gpio0@28
+    1 -> gpio0@29
+    2 -> gpio0@30
+    3 -> gpio0@31
+
+// The phone: a scripted BLE central on the RADIO's air (see peers/ble/phone.py).
+phone: Wireless.ScriptedBlePeer @ sysbus 0x21000000
+    file: "peers/ble/phone.py"
