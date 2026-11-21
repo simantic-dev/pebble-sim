@@ -86,6 +86,50 @@ def set_time(utc, offset_min):
     return pp_msg(EP["clock"], b"\x03" + struct.pack(">IhB", utc, offset_min, 0))
 
 
+# The phone's own GATT server, as the watch discovers it once connected (subsys/bluetooth/gatt_client_discovery.c:
+# ble_gattc_disc_all_svcs, then characteristics and descriptors; gap.c reads the Device Name by UUID). A phone with
+# only the GAP service: (handle, attribute type, value).
+GATT_DB = [(1, 0x2800, struct.pack("<H", 0x1800)),
+           (2, 0x2803, struct.pack("<BHH", 0x02, 3, 0x2A00)),   # read, value handle 3, Device Name
+           (3, 0x2A00, PHONE_NAME)]
+ATT_ERR_ATTR_NOT_FOUND, ATT_ERR_INVALID_HANDLE, ATT_ERR_REQ_NOT_SUPPORTED = 0x0A, 0x01, 0x06
+
+
+def att_server(pdu):
+    """Answer one ATT request from the watch against GATT_DB (Core Vol 3 Part F 3.4). Requests are even opcodes;
+    responses to the phone's own requests (odd) return None."""
+    op = pdu[0]
+    if op & 1 or op in (0x52, 0xD2):                       # responses, notifications, write commands
+        return None
+    if op == 0x1D:                                         # indication: confirm
+        return b"\x1e"
+    if op == 0x02:                                         # Exchange MTU: stay at 23
+        return bytes([0x03, 23, 0])
+    err = lambda h, code: struct.pack("<BBHB", 0x01, op, h, code)
+    if op == 0x0A:                                         # Read
+        h = struct.unpack("<H", pdu[1:3])[0]
+        return next((b"\x0b" + v for a, _, v in GATT_DB if a == h), err(h, ATT_ERR_INVALID_HANDLE))
+    if op not in (0x04, 0x06, 0x08, 0x10):
+        return err(0, ATT_ERR_REQ_NOT_SUPPORTED)
+    start, end = struct.unpack("<HH", pdu[1:5])
+    typ = struct.unpack("<H", pdu[5:7])[0] if len(pdu) >= 7 else None
+    rows = [r for r in GATT_DB if start <= r[0] <= end]
+    if op == 0x04:                                         # Find Information: 16-bit UUIDs
+        out = b"".join(struct.pack("<HH", a, t) for a, t, _ in rows)
+        return b"\x05\x01" + out if out else err(start, ATT_ERR_ATTR_NOT_FOUND)
+    if op == 0x10 and typ == 0x2800:                       # Read By Group Type: primary services
+        svcs = [(a, v) for a, t, v in GATT_DB if t == 0x2800]
+        ends = [a - 1 for a, _ in svcs[1:]] + [0xFFFF]
+        out = [struct.pack("<HH", a, e) + v for (a, v), e in zip(svcs, ends) if start <= a <= end]
+        if out:
+            return bytes([0x11, len(out[0])]) + b"".join(o for o in out if len(o) == len(out[0]))
+    if op == 0x08 and len(pdu) == 7:                       # Read By Type, 16-bit type
+        out = [struct.pack("<H", a) + v for a, t, v in rows if t == typ]
+        if out:
+            return bytes([0x09, len(out[0])]) + b"".join(o for o in out if len(o) == len(out[0]))
+    return err(start, ATT_ERR_ATTR_NOT_FOUND)
+
+
 def run_state_status_request():
     """PebbleOS pebble/process_management/app_run_state.c:89-107, app_run_state.h:25: command 0x03 (STATUS, phone to
     watch) followed by a UUID (zero = none, read by the handler at app_run_state.c:107). The watch answers with
@@ -113,6 +157,9 @@ class Peer:
 
     def log(self, msg):                                    # prefixed with the virtual time, for scripts/demo_gif.py
         self.ctx.warning("t=%.3f %s" % (self.ctx.now_us / 1e6, msg))
+
+    def on_state(self, old, new):                          # pyrite's phone state machine (simantic-dev/pyrite#3977)
+        self.log("state %s -> %s" % (old, new))
 
     # --- scanning and security -------------------------------------------------
     def on_adv(self, addr, data):
@@ -146,10 +193,9 @@ class Peer:
     def on_att(self, pdu):
         pdu = bytes(pdu)
         op = pdu[0]
-        if op == 0x02:                                     # the watch's Exchange MTU Request: stay at 23
-            self.ctx.send(bytes([0x03, 23, 0]))
-        elif op == 0x08:                                   # the watch reads our Device Name (0x2A00)
-            self.ctx.send(bytes([0x09, 2 + len(PHONE_NAME), 3, 0]) + PHONE_NAME)
+        rsp = att_server(pdu)
+        if rsp is not None:                                # the watch's request to the phone's GATT server
+            self.ctx.send(rsp)
         elif op == 0x01:
             self.log("ATT error rsp op=%02x handle=%04x code=%02x in step %s" % (pdu[1], *struct.unpack("<HB", pdu[2:5]), self.step))
         elif op == 0x1B:
@@ -227,8 +273,15 @@ class Peer:
 if __name__ == "__main__":
     d = describe(bytes.fromhex("0201060c09") + b"Pebble 1A2B")
     assert d == 'flags=06 name="Pebble 1A2B"', d
-    m = blobdb_notification("T", "B")
+    m = blobdb_notification({1: "T", 3: "B"})
     assert struct.unpack(">HH", m[:4]) == (len(m) - 4, 0xB1DB), m.hex()
     assert pebble_uuid(0x40000000)[-4:] == bytes([0, 0, 0, 0x40])
     assert len(set_time(SET_UTC, SET_OFFSET_MIN)) == 4 + 1 + 7 and len(version_response()) == 4 + 1 + 12 + 4 + 4
+    svc = att_server(struct.pack("<BHHH", 0x10, 1, 0xFFFF, 0x2800))
+    assert svc == bytes([0x11, 6, 1, 0, 0xFF, 0xFF, 0x00, 0x18]), svc.hex()
+    assert att_server(struct.pack("<BHHH", 0x10, 2, 0xFFFF, 0x2800))[:2] == b"\x01\x10"   # done: not found
+    assert att_server(struct.pack("<BHHH", 0x08, 1, 3, 0x2803)) == bytes([0x09, 7, 2, 0, 0x02, 3, 0, 0x00, 0x2A])
+    assert att_server(struct.pack("<BHHH", 0x08, 1, 0xFFFF, 0x2A00)) == b"\x09\x0b\x03\x00" + PHONE_NAME
+    assert att_server(struct.pack("<BHH", 0x04, 3, 3)) == bytes([0x05, 1, 3, 0, 0x00, 0x2A])
+    assert att_server(bytes([0x09, 7])) is None
     print("ok")
