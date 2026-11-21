@@ -32,7 +32,7 @@ The same run as an MP4 (432x504, 30 fps): [demo.mp4](docs/screens/demo.mp4). Pix
 | 17.0, 17.8 Down, 18.6 Up | highlight moves Music, Notifications, Music | [strip](docs/screens/navigation-strip.png) |
 | 19.4 Select | Music app (20.038) | [png](docs/screens/music.png) |
 | 21.0, 22.0 Back | launcher, then the watch face (22.326) | |
-| 23.026 | phone connects; 25.07 numeric comparison, 25.8 Up confirms on the watch; 26.03 paired + encrypted | |
+| 23.024 | phone connects and starts pairing in the same connection event; 24.59 numeric comparison, 25.8 Up confirms on the watch; 26.03 paired + encrypted | |
 | 26.39 | PPoGATT subscribed and reset handshake; the watch sends its version request (0x11) | |
 | 26.51 | phone: version response (Android, run-state capability); the watch logs `Phone app: is_system=1, plf=0x2, capabilities=0x1` | |
 | 26.81 | phone: time set 2026-11-19 17:37:00 UTC, offset -300 min; the watch's log clock jumps from 00:00:26 to 17:37:00 | |
@@ -122,7 +122,6 @@ Each part below says what the model does, and what it leaves out (marked **Not m
 
 ### Open
 
-- **The phone waits 0.5 s after connecting before it pairs (`PAIR_DELAY_US`).** Pairing in the very first connection event hung the watch. This was a simulator bug, not a PebbleOS bug: pyrite modelled 8 interrupt-priority bits for the nRF52840, where the silicon has 3, so the radio interrupt was not masked when it should have been. The fix is simantic-dev/pyrite#3912. Once it is merged, the delay can go.
 - Every run is a first boot (the NOR starts erased); dumping the NOR after one run and preloading it would cut the 11 s format.
 - `scripts/build_pebbleos.sh` was re-run from a clean checkout on 2026-11-20 with PebbleOS SDK 0.1.16, and that build produced the current demo.
 
