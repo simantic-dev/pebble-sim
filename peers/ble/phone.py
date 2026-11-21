@@ -29,7 +29,6 @@ def describe(data):
 
 
 
-PAIR_DELAY_US = 500_000
 CONNECT_AT_US = int(23.0e6)   # after the button sequence of sim/scenario.yaml
 BASE = bytes.fromhex("328E0FBBC6421AA6699BDADA")  # Pebble base UUID tail, as written in PebbleOS pebble_bt.h
 
@@ -123,11 +122,9 @@ class Peer:
         return self.ctx.now_us >= CONNECT_AT_US and b"Pebble" in bytes(data)
 
     def on_connect(self):
-        # A phone does LL feature/version exchange and MTU before it pairs; pairing in the very first
-        # connection event races PebbleOS's host (see SIMULATION.md, Open).
         self.log("connected at %.3f s" % (self.ctx.now_us / 1e6))
-        self.step = "wait_pair"
-        self.ctx.schedule_oneshot(PAIR_DELAY_US)
+        self.step = "pairing"
+        self.ctx.pair()
 
     def on_numeric_compare(self, value):
         self.log("numeric comparison %06d: confirmed" % value)
@@ -218,10 +215,7 @@ class Peer:
             self.sn = (self.sn + 1) % 32
 
     def on_timer(self):
-        if self.step == "wait_pair":
-            self.step = "pairing"
-            self.ctx.pair()
-        elif self.step == "handshake":
+        if self.step == "handshake":
             if self.queue:
                 self.pp_send(*self.queue.pop(0))
                 self.ctx.schedule_oneshot(500_000 if self.queue else 1_500_000)
