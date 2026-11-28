@@ -82,6 +82,14 @@ int uc8279_x4_probe(const struct pbl_display_ssd1677 *epd) {
   if (memcmp(first, second, 6) != 0) {
     return -EIO;
   }
+  if (id == 0x01 || id == 0x40) {
+    // UC8179 (reference XteinkDetect verIdIsUc8179): own init and refresh in uc8179_x4.c
+    if (!epd->quarter || epd->panel_height != 800 || epd->panel_width != 480) {
+      return -ENOTSUP;
+    }
+    epd->state->uc8179 = true;
+    return 0;
+  }
   if (!known || !epd->quarter || epd->panel_height != 800 || epd->panel_width != 480) {
     return -ENOTSUP;
   }

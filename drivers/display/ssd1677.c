@@ -11,6 +11,7 @@
 #include <pbl/drivers/display/ssd1677.h>
 #ifdef CONFIG_DISPLAY_UC8279_X4
 #include "uc8279_x4.h"
+#include "uc8179_x4.h"
 #endif
 #include <pbl/kernel/assert.h>
 #include <pbl/kernel/delay.h>
@@ -836,6 +837,9 @@ static int prv_init(const struct pbl_display *disp) {
   if (state->uc8279) {
     return uc8279_x4_init(epd);
   }
+  if (state->uc8179) {
+    return uc8179_x4_init(epd);
+  }
 #endif
 
   // BUSY drops when a refresh ends
@@ -908,6 +912,11 @@ static int prv_disable(const struct pbl_display *disp) {
   }
 
 #ifdef CONFIG_DISPLAY_UC8279_X4
+  if (epd->state->uc8179) {
+    // Each refresh powers the panel off, so there is nothing to turn off here
+    pbl_mutex_unlock(&epd->state->lock);
+    return 0;
+  }
   if (epd->state->uc8279) {
     if (pbl_display_update_in_progress(disp)) {
       pbl_mutex_unlock(&epd->state->lock);
@@ -1950,6 +1959,12 @@ static int prv_update(const struct pbl_display *disp, const struct pbl_display_b
   (void)pbl_mutex_lock(&state->lock, PBL_FOREVER);
 
 #ifdef CONFIG_DISPLAY_UC8279_X4
+  if (epd->state->uc8179) {
+    ret = uc8179_x4_update(epd, buf);
+    pbl_mutex_unlock(&state->lock);
+    pbl_display_complete(disp, ret);
+    return 0;
+  }
   if (epd->state->uc8279) {
     struct pbl_display_buffer next = *buf;
     if (buf->detail && buf->detail->grey) {
@@ -2135,7 +2150,7 @@ int pbl_display_ssd1677_grey(const struct pbl_display *disp, const uint8_t *old_
   int ret;
 
 #ifdef CONFIG_DISPLAY_UC8279_X4
-  if (epd->state->uc8279) {
+  if (epd->state->uc8279 || epd->state->uc8179) {
     return -ENOTSUP;
   }
 #endif

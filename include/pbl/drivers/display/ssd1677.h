@@ -87,6 +87,7 @@ struct pbl_display_ssd1677_state {
 #ifdef CONFIG_DISPLAY_UC8279_X4
   uint8_t panel_id[2][6];
   bool uc8279;
+  bool uc8179;
   bool power_off_pending;
   bool last_was_grey;
   bool grey_hash_valid;
