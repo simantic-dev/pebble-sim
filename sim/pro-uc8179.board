@@ -1,0 +1,15 @@
+# Xteink X4 Pro (ESP32-S3, 16 MiB flash): UC8179 panel (+ bit-banged probe on GPIO11/12) on GP-SPI2.
+flash_data:
+    size: 0x1000000
+
+epd: SPI.ScriptedSpiSlave @ spi2
+    file: "sim/peers/uc8179.py"
+    numberOfGpios: 6
+    config: "{\"id\": 1}"
+    2 -> gpio@6
+    5 -> gpio@11
+
+gpio:
+    18 -> epd@1
+    12 -> epd@3
+    11 -> epd@4
