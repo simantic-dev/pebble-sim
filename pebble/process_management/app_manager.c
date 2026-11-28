@@ -23,6 +23,7 @@
 #include <applib/app_launch_reason.h>
 #include <applib/app_message/app_message_internal.h>
 #include <applib/fonts/fonts.h>
+#include <applib/graphics/text_detail.h>
 #include <applib/ui/dialogs/dialog.h>
 #include <applib/ui/dialogs/simple_dialog.h>
 #include <kernel/event_loop.h>
@@ -236,10 +237,22 @@ static size_t prv_get_app_segment_size(const PebbleProcessMd *app_md) {
   }
 }
 
+#ifdef CONFIG_APP_NATIVE_ALIASED
+// Without userspace a native app's firmware calls run on its own stack. 4 KiB
+// also puts the app it is carved in front of on a 4 KiB boundary, which its
+// lui relocations need.
+#define APP_STACK_NATIVE_SIZE (4 * 1024)
+#endif
+
 static size_t prv_get_app_stack_size(const PebbleProcessMd *app_md) {
 #ifdef CONFIG_MODDABLE_XS
   if (app_md->is_moddable_app) {
     return APP_STACK_JS_SIZE;
+  }
+#endif
+#ifdef CONFIG_APP_NATIVE_ALIASED
+  if ((app_md->process_storage == ProcessStorageFlash) && process_metadata_runs_natively(app_md)) {
+    return APP_STACK_NATIVE_SIZE;
   }
 #endif
   // Only 4x/System apps get the larger stack: their segment (CONFIG_APP_RAM_*)
@@ -346,10 +359,23 @@ static bool prv_app_start(const PebbleProcessMd *app_md, const void *args,
 
   const ResAppNum res_bank_num = process_metadata_get_res_bank_num(app_md);
   if (res_bank_num != SYSTEM_APP) {
-    const ResourceVersion res_version = process_metadata_get_res_version(app_md);
-    if (!resource_init_app(res_bank_num, &res_version)) {
+    // Which resources are the app's is for its metadata to say; the store checks they are intact
+    const ResourceVersion res_version = resource_get_version(res_bank_num, 0);
+    if (!process_metadata_resources_match(app_md, &res_version) ||
+        !resource_init_app(res_bank_num, nullptr)) {
       // The resources are busted! Abort starting this app.
       APP_LOG(APP_LOG_LEVEL_ERROR, "Checksum for resources differs.");
+      return false;
+    }
+  }
+
+  // A runtime interpreting the app runs, with the firmware it calls, on a stack of its own.
+  const size_t host_stack_size = process_runtime_host_stack_size(app_md);
+  void *host_stack = nullptr;
+  if (host_stack_size) {
+    host_stack = memory_segment_split(&app_ram, nullptr, host_stack_size);
+    if (!host_stack) {
+      PBL_LOG_ERR("No room for the runtime's stack");
       return false;
     }
   }
@@ -411,8 +437,8 @@ static bool prv_app_start(const PebbleProcessMd *app_md, const void *args,
     .prio = CONFIG_APP_THREAD_PRIO,
     .privileged = true,
     .user_stack = prv_has_user_stack(app_md),
-    .stack = (char *)stack - stack_guard_size,
-    .stack_size = stack_size + stack_guard_size,
+    .stack = host_stack ?: (char *)stack - stack_guard_size,
+    .stack_size = host_stack ? host_stack_size : stack_size + stack_guard_size,
   };
 
   PBL_LOG_DBG("Starting %s", task_name);
@@ -467,6 +493,9 @@ static void prv_app_cleanup(void) {
   process_manager_process_cleanup(PebbleTask_App);
 
   // Perform app specific cleanup
+#ifdef CONFIG_TEXT_DETAIL
+  text_detail_app_unload();
+#endif
   app_idle_timeout_stop();
 #ifndef CONFIG_RECOVERY_FW
   app_inbox_service_unregister_all();

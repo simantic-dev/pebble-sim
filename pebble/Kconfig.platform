@@ -12,10 +12,16 @@
 
 choice
     prompt "SDK platform"
+config PLATFORM_CYBERDECK
+    bool "Cyberdeck"
 config PLATFORM_EMERY
     bool "Emery"
 config PLATFORM_FLINT
     bool "Flint"
+config PLATFORM_XTEINKX4
+    bool "Xteink X4"
+config PLATFORM_XTEINKX4PRO
+    bool "Xteink X4 Pro and BOOX Picco"
 config PLATFORM_GABBRO
     bool "Gabbro"
 endchoice
@@ -34,7 +40,18 @@ config PLATFORM_ABI
     default "armv7m"
     help
       What app binaries are compiled for. armv7m is Cortex-M3 Thumb code
-      with soft float.
+      with soft float. riscv32 is RV32IMC code with soft float, its code
+      linked 0x700000 above its data: the ESP32-C3's instruction-bus window
+      of its RAM.
+
+config PLATFORM_ABI_ID
+    int
+    default 3 if PLATFORM_ABI = "xtensa"
+    default 2 if PLATFORM_ABI = "riscv32"
+    default 1
+    help
+      PLATFORM_ABI as PebblePlatformAbi numbers it in binaries and in the
+      version reply.
 
 # Display properties apps are built against. The display hardware may differ;
 # its own properties belong to its driver.
@@ -82,6 +99,9 @@ config PLATFORM_RGB_BACKLIGHT
     bool
 
 config PLATFORM_SPEAKER
+    bool
+
+config PLATFORM_BAROMETER
     bool
 
 config PLATFORM_MODDABLE_XS
@@ -152,3 +172,10 @@ config PLATFORM_ANIMATION_RENDER_INTERVAL_MS
     default PLATFORM_ANIMATION_FRAME_INTERVAL_MS
     help
       Interval at which animation frames are rendered.
+
+config PLATFORM_ANIMATION_INSTANT
+    bool "Animations end at once"
+    help
+      Finite animations, and the transitions built on them, show only their
+      last frame: for displays that take longer to refresh than an animation
+      lasts, such as e-paper. Repeating ones keep their timing.

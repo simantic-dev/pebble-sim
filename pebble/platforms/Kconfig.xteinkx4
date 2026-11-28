@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+if PLATFORM_XTEINKX4 || PLATFORM_XTEINKX4PRO
+
+config PLATFORM_NAME
+    default "xteinkx4pro" if PLATFORM_XTEINKX4PRO
+    default "xteinkx4"
+
+config PLATFORM_ABI
+    default "xtensa" if PLATFORM_XTEINKX4PRO
+    default "riscv32"
+
+config PLATFORM_TOUCH
+    default y if BOARD_XTEINK_X4_PRO
+
+config PLATFORM_DISPLAY_WIDTH
+    default 240
+
+config PLATFORM_DISPLAY_HEIGHT
+    default 400
+
+# What an app and a worker may take: their segments less the 4 KiB stack a
+# native process has, on which its calls into the firmware run.
+config PLATFORM_MAX_APP_MEMORY_SIZE
+    default 63488
+
+config PLATFORM_MAX_WORKER_MEMORY_SIZE
+    default 7552
+
+# RAM of an app and of its runtime.
+
+config APP_RAM_4X_SEGMENT_SIZE
+    default 67584
+
+# With FRAMEBUFFER_SCALE2 the app's framebuffer in its runtime is 4x larger (48,000 B, so
+# AppState is 53,620 B on RV32), and Samsa takes 8 KiB of the runtime for its host stack.
+# Segment plus runtime stays a whole number of 4 KiB: native apps load at the start of app RAM,
+# which ends at a fixed address, and need a 4 KiB aligned load address.
+config APP_RAM_4X_RUNTIME_SIZE
+    default 63488 if FRAMEBUFFER_SCALE2 && SAMSA
+    default 55296 if FRAMEBUFFER_SCALE2
+    default 30720
+
+# The system UI's glyphs stored with their edges: up to 778 bytes (36 px, the local Bookerly set);
+# fontgen refuses a glyph larger than this
+
+config PLATFORM_MAX_FONT_GLYPH_SIZE
+    default 1024
+
+endif # PLATFORM_XTEINKX4

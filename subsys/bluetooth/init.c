@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2025 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include "responsiveness.h"
 #include "services/services.h"
 #include "store.h"
 
@@ -14,7 +15,6 @@
 #include <pbl/kernel/types.h>
 #include <pbl/logging/logging.h>
 
-#include <comm/bt_lock.h>
 #include <host/ble_hs.h>
 #include <host/ble_hs_stop.h>
 #include <host/util/util.h>
@@ -27,12 +27,12 @@ PBL_LOG_MODULE_DEFINE(bt, CONFIG_BT_LOG_LEVEL);
 
 static const uint32_t s_bt_stack_start_stop_timeout_ms = 10000;
 
-extern void nimble_discover_init(void);
 extern void nimble_gattc_op_queue_init(void);
 
 static PBL_SEM_DEFINE(s_host_started, 0, 1);
 static PBL_SEM_DEFINE(s_host_stopped, 0, 1);
 static struct ble_hs_stop_listener s_listener;
+static int s_stop_status;
 
 typedef enum {
   DriverStateStopped,
@@ -58,7 +58,7 @@ static void prv_sync_cb(void) {
   }
 
   pbl_sem_give(&s_host_started);
-  pbl_bt_handle_host_resynced();
+  pbl_bt_cb_host_synced();
 }
 
 static void prv_reset_cb(int reason) {
@@ -98,18 +98,17 @@ static int prv_ensure_addr(void) {
 }
 
 static void prv_ble_hs_stop_cb(int status, void *arg) {
+  s_stop_status = status;
   pbl_sem_give(&s_host_stopped);
 }
 
 // ----------------------------------------------------------------------------------------
 void pbl_bt_init(void) {
-  bt_lock_init();
-
-  nimble_discover_init();
   nimble_gattc_op_queue_init();
 
   nimble_port_init();
   pbl_bt__store_init();
+  pbl_bt__responsiveness_init();
 
   ble_hs_cfg.sync_cb = prv_sync_cb;
   ble_hs_cfg.reset_cb = prv_reset_cb;
@@ -147,6 +146,13 @@ bool pbl_bt_start(struct pbl_bt_config *config) {
     return false;
   }
 
+#ifdef CONFIG_NIMBLE_HCI_ESP32C3
+  if (nimble_port_pebble_hci_resume() != 0) {
+    (void)ble_gatts_reset();
+    s_driver_state = DriverStateStopped;
+    return false;
+  }
+#endif
   ble_hs_sched_start();
   f_rc = (pbl_sem_take(&s_host_started, PBL_MSEC(s_bt_stack_start_stop_timeout_ms)) == 0);
   if (!f_rc) {
@@ -180,7 +186,11 @@ err:
 
   s_driver_state = DriverStateStopped;
   (void)ble_gatts_reset();
-
+#ifdef CONFIG_NIMBLE_HCI_ESP32C3
+  if (s_stop_status == 0) {
+    nimble_port_pebble_hci_suspend();
+  }
+#endif
   return false;
 }
 
@@ -195,7 +205,9 @@ void pbl_bt_stop(void) {
   s_driver_state = DriverStateStopped;
 
   ble_gatts_reset();
-}
-
-void pbl_bt_power_down_controller_on_boot(void) {
+#ifdef CONFIG_NIMBLE_HCI_ESP32C3
+  if (s_stop_status == 0) {
+    nimble_port_pebble_hci_suspend();
+  }
+#endif
 }

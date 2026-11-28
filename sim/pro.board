@@ -1,0 +1,11 @@
+# Xteink X4 Pro (ESP32-S3, 16 MiB flash): SSD1677 panel on GP-SPI2 (CS GPIO13, DC GPIO18, BUSY GPIO6).
+flash_data:
+    size: 0x1000000
+
+epd: SPI.ScriptedSpiSlave @ spi2
+    file: "sim/peers/ssd1677.py"
+    numberOfGpios: 3
+    2 -> gpio@6
+
+gpio:
+    18 -> epd@1

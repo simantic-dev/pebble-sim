@@ -72,6 +72,8 @@ extern uint8_t __bss_end[];
 extern uint8_t __ramfunc_load_start[];
 extern uint8_t __ramfunc_start[];
 extern uint8_t __ramfunc_end[];
+// Where .ramfunc is written, which is where it runs unless the SoC fetches it through an alias
+extern uint8_t __ramfunc_copy_start[];
 #endif
 
 extern int main(void);
@@ -79,7 +81,18 @@ extern int main(void);
 void kernel_prep_c(void) {
   memcpy(__data_start, __data_load_start, __data_end - __data_start);
 #ifdef CONFIG_RAMFUNC
-  memcpy(__ramfunc_start, __ramfunc_load_start, __ramfunc_end - __ramfunc_start);
+#ifdef CONFIG_CPU_XTENSA
+  // ESP32-S3 IRAM requires 32-bit aligned writes and is not aliased to DRAM in QEMU.
+  uint32_t *dst = (uint32_t *)__ramfunc_start;
+  const uint32_t *src = (const uint32_t *)__ramfunc_load_start;
+
+  for (size_t n = (size_t)(__ramfunc_end - __ramfunc_start) / sizeof(uint32_t); n > 0U; n--) {
+    *dst++ = *src++;
+  }
+  __asm volatile("memw\n\tisync" ::: "memory");
+#else
+  memcpy(__ramfunc_copy_start, __ramfunc_load_start, __ramfunc_end - __ramfunc_start);
+#endif
 #endif
   memset(__bss_start, 0, __bss_end - __bss_start);
 

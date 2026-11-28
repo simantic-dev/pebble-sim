@@ -17,6 +17,10 @@
 
 PBL_LOG_MODULE_DECLARE(service_compositor, CONFIG_SERVICE_COMPOSITOR_LOG_LEVEL);
 
+#define FAST_LINK_TIMEOUT_S 5
+
+static struct pbl_bt_responsiveness_req s_response_time_req;
+
 static bool s_screenshot_in_progress = false;
 
 typedef enum {
@@ -70,22 +74,22 @@ static void prv_send_error_response(struct pbl_pp_session *session, uint8_t resp
 }
 
 static void prv_finish(ScreenshotState *state) {
-  pbl_pp_session_set_responsiveness(state->session, PBL_BT_CONSUMER_PP_SCREENSHOT,
-                                    PBL_BT_RESPONSE_TIME_MAX, 0, nullptr);
+  pbl_pp_session_set_responsiveness(state->session, &s_response_time_req, PBL_BT_RESPONSE_TIME_MAX,
+                                    0);
   compositor_unfreeze();
   s_screenshot_in_progress = false;
 }
 
 static void prv_request_fast_connection(struct pbl_pp_session *session) {
-  pbl_pp_session_set_responsiveness(session, PBL_BT_CONSUMER_PP_SCREENSHOT,
-                                    PBL_BT_RESPONSE_TIME_MIN,
-                                    PBL_BT_MIN_LATENCY_MODE_TIMEOUT_SCREENSHOT_SECS, nullptr);
+  pbl_pp_session_set_responsiveness(session, &s_response_time_req, PBL_BT_RESPONSE_TIME_MIN,
+                                    FAST_LINK_TIMEOUT_S);
 }
 
 static uint32_t prv_framebuffer_next_chunk(FrameBufferState *restrict state,
                                            uint32_t max_chunk_bytes, uint8_t *output_buffer) {
-  const uint32_t bytes_per_row = CONFIG_SCREEN_COLOR_DEPTH_BITS * PBL_DISPLAY_WIDTH / 8;
-  const uint32_t cols_per_byte = PBL_DISPLAY_WIDTH / bytes_per_row;
+  // The framebuffer as stored, at FRAMEBUFFER_SCALE
+  const uint32_t bytes_per_row = CONFIG_SCREEN_COLOR_DEPTH_BITS * state->width / 8;
+  const uint32_t cols_per_byte = state->width / bytes_per_row;
 
   uint32_t remaining_chunk_bytes = max_chunk_bytes;
   uint8_t *output_buffer_with_offset = output_buffer;
@@ -228,8 +232,8 @@ void screenshot_protocol_msg_callback(struct pbl_pp_session *session, const uint
           .fb = compositor_get_framebuffer(),
           .row = 0,
           .col = 0,
-          .width = PBL_DISPLAY_WIDTH,
-          .height = PBL_DISPLAY_HEIGHT,
+          .width = PBL_DISPLAY_WIDTH * FRAMEBUFFER_SCALE,
+          .height = PBL_DISPLAY_HEIGHT * FRAMEBUFFER_SCALE,
         },
     .sent_header = false,
   };

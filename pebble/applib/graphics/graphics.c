@@ -95,6 +95,15 @@ PBL_T_STATIC void prv_fill_rect_legacy2(GContext *ctx, GRect rect, uint16_t radi
   // Mark the destination dirty before clipped_rect is modified.
   graphics_context_mark_dirty_rect(ctx, clipped_rect);
 
+#ifdef CONFIG_FRAMEBUFFER_SCALE2
+  // A plain rectangle at twice the size: its rows in one pass
+  if ((radius == 0 || corner_mask == GCornerNone) && gbitmap_is_scaled2(bitmap) &&
+      ctx->draw_state.draw_implementation == &g_default_draw_implementation) {
+    graphics_private_fill_rect_scaled2(bitmap, clipped_rect, fill_color);
+    return;
+  }
+#endif
+
   // bit-block fiddling:
   const int16_t max_y = clipped_rect.origin.y + clipped_rect.size.h;
   for (; clipped_rect.origin.y < max_y; ++clipped_rect.origin.y) {
@@ -621,6 +630,15 @@ GBitmap *graphics_context_get_bitmap(GContext *ctx) {
 
 void graphics_context_mark_dirty_rect(GContext *ctx, GRect rect) {
   PBL_ASSERTN(ctx);
+#ifdef CONFIG_FRAMEBUFFER_SCALE2_SHAPES
+  if (ctx->scaled2) {
+    // Every pixel any stored pixel of the rectangle belongs to
+    const int16_t x0 = rect.origin.x >> 1;
+    const int16_t y0 = rect.origin.y >> 1;
+    rect = GRect(x0, y0, ((rect.origin.x + rect.size.w + 1) >> 1) - x0,
+                 ((rect.origin.y + rect.size.h + 1) >> 1) - y0);
+  }
+#endif
   if (ctx->parent_framebuffer) {
     framebuffer_mark_dirty_rect(ctx->parent_framebuffer, rect);
   }
@@ -630,6 +648,67 @@ bool graphics_frame_buffer_is_captured(GContext *ctx) {
   PBL_ASSERTN(ctx);
   return ctx->lock;
 }
+
+#ifdef CONFIG_FRAMEBUFFER_SCALE2
+// The public functions below, not graphics_private.h's redirect for the graphics routines
+#undef graphics_capture_frame_buffer
+
+GBitmap *graphics_private_capture_frame_buffer(GContext *ctx) {
+  PBL_ASSERTN(ctx);
+  if (ctx->lock) {
+    return nullptr;
+  }
+  ctx->lock = true;
+  return &ctx->dest_bitmap;
+}
+
+// Code that reads and writes the framebuffer's rows gets it at the display's size: the top-left
+// pixel of each 2x2 block, compacted in place to the start of the buffer, each row ahead of
+// where it is read. Text and shapes drawn at twice the size are 2x2 blocks after the release.
+// ponytail: a whole-frame pass each way per capture; a scratch buffer would keep the detail
+static GBitmap *prv_capture_scaled2(GContext *ctx) {
+  const GBitmap *fb = &ctx->dest_bitmap;
+  uint8_t *p = fb->addr;
+  const uint16_t stored = fb->row_size_bytes;
+  const uint16_t row_size = gbitmap_format_get_row_size_bytes(fb->bounds.size.w, GBitmapFormat1Bit);
+  const int bytes = (fb->bounds.size.w + 7) / 8;
+  for (int y = 0; y < fb->bounds.size.h; y++) {
+    const uint8_t *src = p + 2 * y * stored;
+    uint8_t *dst = p + y * row_size;
+    for (int j = 0; j < bytes; j++) {
+      uint32_t v = (src[2 * j] | (src[2 * j + 1] << 8)) & 0x5555U;
+      v = (v | (v >> 1)) & 0x3333U;
+      v = (v | (v >> 2)) & 0x0F0FU;
+      dst[j] = (uint8_t)(v | (v >> 4));
+    }
+  }
+  ctx->scaled2_capture = *fb;
+  ctx->scaled2_capture.info.is_scaled2 = false;
+  ctx->scaled2_capture.row_size_bytes = row_size;
+  ctx->scaled2_captured = true;
+  return &ctx->scaled2_capture;
+}
+
+// Each pixel back to its 2x2 block, from the last row so nothing is overwritten before it is read
+static void prv_release_scaled2(GContext *ctx) {
+  const GBitmap *fb = &ctx->dest_bitmap;
+  uint8_t *p = fb->addr;
+  const uint16_t stored = fb->row_size_bytes;
+  const uint16_t row_size = ctx->scaled2_capture.row_size_bytes;
+  const int bytes = (fb->bounds.size.w + 7) / 8;
+  for (int y = fb->bounds.size.h - 1; y >= 0; y--) {
+    for (int j = bytes - 1; j >= 0; j--) {
+      const uint32_t d = graphics_private_double_bits16(p[y * row_size + j]);
+      for (int r = 0; r < 2; r++) {
+        uint8_t *dst = p + (2 * y + r) * stored + 2 * j;
+        dst[0] = (uint8_t)d;
+        dst[1] = (uint8_t)(d >> 8);
+      }
+    }
+  }
+  ctx->scaled2_captured = false;
+}
+#endif
 
 GBitmap *graphics_capture_frame_buffer_format(GContext *ctx, GBitmapFormat format) {
   PBL_ASSERTN(ctx);
@@ -644,6 +723,11 @@ GBitmap *graphics_capture_frame_buffer_format(GContext *ctx, GBitmapFormat forma
   GBitmap *native = graphics_context_get_bitmap(ctx);
 
   if (format == native->info.format) {
+#ifdef CONFIG_FRAMEBUFFER_SCALE2
+    if (gbitmap_is_scaled2(native)) {
+      return prv_capture_scaled2(ctx);
+    }
+#endif
     return native;
   }
 
@@ -681,6 +765,21 @@ PBL_T_MOCKABLE GBitmap *graphics_capture_frame_buffer(GContext *ctx) {
 
 PBL_T_MOCKABLE bool graphics_release_frame_buffer(GContext *ctx, GBitmap *buffer) {
   PBL_ASSERTN(ctx);
+#ifdef CONFIG_FRAMEBUFFER_SCALE2
+  if (ctx->scaled2_captured) {
+    prv_release_scaled2(ctx);
+    ctx->lock = false;
+    framebuffer_dirty_all(ctx->parent_framebuffer);
+    return true;
+  }
+  // The graphics routines release it after every line: skip the format look-up, which asks the
+  // process manager whether the app is a legacy one
+  if (buffer == &ctx->dest_bitmap) {
+    ctx->lock = false;
+    framebuffer_dirty_all(ctx->parent_framebuffer);
+    return true;
+  }
+#endif
   GBitmap *native_framebuffer = graphics_context_get_bitmap(ctx);
   if (gbitmap_get_format(buffer) != GBITMAP_NATIVE_FORMAT) {
     ctx->lock = false;

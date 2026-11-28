@@ -9,9 +9,12 @@
 #include <string.h>
 
 #include <pbl/kernel/compiler.h>
+#include <pbl/kernel/debug.h>
 #include <pbl/kernel/delay.h>
 #include <pbl/kernel/fatal.h>
+#include <pbl/kernel/heap.h>
 #include <pbl/kernel/irq.h>
+#include <pbl/kernel/malloc.h>
 #include <pbl/kernel/mpu.h>
 #include <pbl/kernel/reboot.h>
 #include <pbl/kernel/time.h>
@@ -31,8 +34,20 @@ static int prv_cmd_reset(const struct pbl_shell *sh, size_t argc, char **argv) {
   pbl_reboot();
 }
 
-static int prv_cmd_poweroff(const struct pbl_shell *sh, size_t argc, char **argv) {
+#ifdef CONFIG_SERVICE_BOOT_SPLASH_POWER_OFF
+static void prv_poweroff_cb(void *context) {
   pbl_power_off();
+}
+#endif
+
+static int prv_cmd_poweroff(const struct pbl_shell *sh, size_t argc, char **argv) {
+#ifdef CONFIG_SERVICE_BOOT_SPLASH_POWER_OFF
+  // The display prepare handlers need the system workqueue during shutdown.
+  launcher_task_add_callback(prv_poweroff_cb, nullptr);
+  return 0;
+#else
+  pbl_power_off();
+#endif
 }
 
 static int prv_cmd_powercut(const struct pbl_shell *sh, size_t argc, char **argv) {
@@ -238,6 +253,40 @@ static int prv_cmd_mpu(const struct pbl_shell *sh, size_t argc, char **argv) {
 }
 
 PBL_SHELL_SUBCMD_ADD(sub_sys, mpu, nullptr, "Dump the MPU regions", prv_cmd_mpu, 0, 0);
+
+static int prv_cmd_stacks(const struct pbl_shell *sh, size_t argc, char **argv) {
+  static struct pbl_thread_stats s_stats[CONFIG_KERNEL_MAX_THREADS];
+  size_t count = pbl_thread_stats_snapshot(s_stats, PBL_ARRAY_SIZE(s_stats), nullptr);
+
+  for (size_t i = 0; i < count; i++) {
+    size_t size = s_stats[i].thread->stack_size;
+
+    pbl_shell_print(sh, "%-12s %5u of %5u bytes never used (%u %%)", s_stats[i].name,
+                    (unsigned int)s_stats[i].stack_high_water, (unsigned int)size,
+                    (unsigned int)(s_stats[i].stack_high_water * 100U / size));
+  }
+  return 0;
+}
+
+static int prv_cmd_heap(const struct pbl_shell *sh, size_t argc, char **argv) {
+  struct pbl_heap *heap = pbl_malloc_heap();
+  unsigned int used = 0U;
+  unsigned int free = 0U;
+  unsigned int max_free = 0U;
+  size_t total = pbl_heap_size(heap);
+  size_t min_headroom = pbl_heap_min_headroom(heap);
+
+  pbl_heap_stats(heap, &used, &free, &max_free);
+  pbl_shell_print(sh, "kernel heap: %u used, %u free (%u largest), peak %u, min free %u / %u",
+                  used, free, max_free, (unsigned int)(total - min_headroom),
+                  (unsigned int)min_headroom, (unsigned int)total);
+  return 0;
+}
+
+PBL_SHELL_SUBCMD_ADD(sub_sys, heap, nullptr, "Show kernel heap usage and headroom", prv_cmd_heap, 0,
+                     0);
+PBL_SHELL_SUBCMD_ADD(sub_sys, stacks, nullptr,
+                     "Show how much of each thread's stack was never used", prv_cmd_stacks, 0, 0);
 PBL_SHELL_SUBCMD_ADD(sub_sys, reset, nullptr, "Reset the system", prv_cmd_reset, 0, 0);
 PBL_SHELL_SUBCMD_ADD(sub_sys, poweroff, nullptr, "Power the system off", prv_cmd_poweroff, 0, 0);
 PBL_SHELL_SUBCMD_ADD(sub_sys, powercut, nullptr, "Cut the power of the system", prv_cmd_powercut, 0,

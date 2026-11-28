@@ -8,7 +8,7 @@ import os.path
 import sys
 from shutil import copy2
 from struct import pack, unpack
-from subprocess import PIPE, Popen
+from subprocess import PIPE, Popen, check_output
 
 import stm32_crc
 from pbpack import ResourcePack
@@ -74,6 +74,43 @@ ENTRY_PT_SYMBOL = "pbl_process_entry"
 MAIN_SYMBOL = "main"
 JUMP_TABLE_ADDR_SYMBOL = "pbl_table_addr"
 ABS_RELOC_TYPES = ("R_ARM_ABS32", "R_ARM_TARGET1")
+# riscv32: R_RISCV_32 is a slot to relocate and R_RISCV_HI20 the lui of an absolute address,
+# whose table entry has bit 31 set (RISCV_HI20_ENTRY). The others below need nothing once linked: pc-relative, or
+# the low 12 bits of an address, which a load address aligned to 4 KiB leaves as they are.
+RISCV_SLOT_RELOC = "R_RISCV_32"
+RISCV_HI20_ENTRY = 1 << 31
+RISCV_HI20_RELOC = "R_RISCV_HI20"
+RISCV_LINKED_RELOCS = (
+    "R_RISCV_LO12_I",
+    "R_RISCV_LO12_S",
+    "R_RISCV_PCREL_HI20",
+    "R_RISCV_PCREL_LO12_I",
+    "R_RISCV_PCREL_LO12_S",
+    "R_RISCV_BRANCH",
+    "R_RISCV_JAL",
+    "R_RISCV_CALL",
+    "R_RISCV_CALL_PLT",
+    "R_RISCV_RVC_BRANCH",
+    "R_RISCV_RVC_JUMP",
+    "R_RISCV_32_PCREL",
+    # The difference of two addresses of the image, as relative jump tables hold: both move with
+    # the load address. The SET ones only come paired with a SUB.
+    "R_RISCV_ADD8",
+    "R_RISCV_ADD16",
+    "R_RISCV_ADD32",
+    "R_RISCV_SUB6",
+    "R_RISCV_SUB8",
+    "R_RISCV_SUB16",
+    "R_RISCV_SUB32",
+    "R_RISCV_SET6",
+    "R_RISCV_SET8",
+    "R_RISCV_SET16",
+    "R_RISCV_SET_ULEB128",
+    "R_RISCV_SUB_ULEB128",
+    "R_RISCV_RELAX",
+    "R_RISCV_ALIGN",
+    "R_RISCV_NONE",
+)
 DEBUG = False
 
 
@@ -81,8 +118,8 @@ class InvalidBinaryError(Exception):
     pass
 
 
-def get_nm_output(elf_file):
-    nm_process = Popen(["arm-none-eabi-nm", elf_file], stdout=PIPE)
+def get_nm_output(elf_file, prefix="arm-none-eabi-"):
+    nm_process = Popen([prefix + "nm", elf_file], stdout=PIPE)
     # Popen.communicate returns a tuple of (stdout, stderr)
     nm_output = nm_process.communicate()[0].decode("utf8")
 
@@ -92,8 +129,34 @@ def get_nm_output(elf_file):
     return [line.split() for line in nm_output.splitlines()]
 
 
-def elf_symbol_names(elf_file):
-    return [line[-1] for line in get_nm_output(elf_file)]
+def _loaded_relocations(elf_file, prefix):
+    """Relocations in the sections packed into an app image."""
+    output = check_output([prefix + "readelf", "-rW", elf_file], text=True)
+    loaded = False
+    for line in output.splitlines():
+        if line.startswith("Relocation section '"):
+            loaded = line.split("'")[1].startswith(
+                (".rela.text", ".rela.rodata", ".rela.data")
+            )
+            continue
+        columns = line.split()
+        if loaded and len(columns) >= 3 and columns[2].startswith("R_"):
+            yield columns
+
+
+def elf_symbol_names(elf_file, prefix="arm-none-eabi-"):
+    symbols = get_nm_output(elf_file, prefix)
+    if prefix != "xtensa-esp32s3-elf-":
+        return [line[-1] for line in symbols]
+    # All the SDK's absolute import symbols appear in nm. Only literals
+    # referencing a symbol in the loaded image are uses of its SDK function.
+    names = {line[-1] for line in symbols if line[-2].upper() != "A"}
+    names.update(
+        columns[4]
+        for columns in _loaded_relocations(elf_file, prefix)
+        if len(columns) >= 5 and columns[2] == "R_XTENSA_32"
+    )
+    return names
 
 
 def inject_metadata(
@@ -104,7 +167,11 @@ def inject_metadata(
     allow_js=False,
     has_worker=False,
     max_binary_size=None,
+    toolchain_prefix="arm-none-eabi-",
+    code_offset=0,
 ):
+    """code_offset: how far above its place in the image code is linked, which
+    addresses of code in the header and the relocation table do not include."""
     if max_binary_size is None:
         max_binary_size = MAX_APP_BINARY_SIZE
 
@@ -136,7 +203,7 @@ def inject_metadata(
         """returns the virtual size (static memory usage, .text + .data + .bss) in bytes"""
 
         readelf_bss_process = Popen(
-            f"arm-none-eabi-readelf -S '{elf_file}'", shell=True, stdout=PIPE
+            f"{toolchain_prefix}readelf -S '{elf_file}'", shell=True, stdout=PIPE
         )
         readelf_bss_output = readelf_bss_process.communicate()[0].decode("utf8")
 
@@ -187,13 +254,54 @@ def inject_metadata(
             "Failed to parse ELF sections while calculating the virtual size"
         )
 
+    def image_offset(addr):
+        return addr - code_offset if code_offset and addr >= code_offset else addr
+
+    def get_aliased_relocate_entries(elf_file):
+        """The slots and lui instructions to relocate, as image offsets; a lui has bit 31 set."""
+        entries = []
+        for columns in _loaded_relocations(elf_file, toolchain_prefix):
+            offset = image_offset(int(columns[0], 16))
+            if toolchain_prefix == "xtensa-esp32s3-elf-":
+                reloc = columns[2]
+                if reloc in ("R_XTENSA_32", "R_XTENSA_PLT"):
+                    entries.append(offset)
+                elif reloc not in (
+                    "R_XTENSA_SLOT0_OP",
+                    "R_XTENSA_ASM_EXPAND",
+                    "R_XTENSA_ASM_SIMPLIFY",
+                    "R_XTENSA_NONE",
+                    "R_XTENSA_DIFF8",
+                    "R_XTENSA_DIFF16",
+                    "R_XTENSA_DIFF32",
+                ):
+                    raise InvalidBinaryError(
+                        f"unsupported Xtensa relocation {reloc} at 0x{offset:x}"
+                    )
+                continue
+            if columns[2] == RISCV_SLOT_RELOC:
+                # At any offset: a pointer in a packed struct need not be aligned
+                entries.append(offset)
+            elif columns[2] == RISCV_HI20_RELOC:
+                if offset % 2:
+                    raise InvalidBinaryError(f"misaligned lui at 0x{offset:x}")
+                entries.append(offset | RISCV_HI20_ENTRY)
+            elif columns[2] not in RISCV_LINKED_RELOCS:
+                raise RuntimeError(
+                    f"{columns[2]} at 0x{offset:x} cannot be relocated when the app is loaded: "
+                    "build with the SDK's flags (-mcmodel=medany -mno-relax, no TLS)"
+                )
+        return entries
+
     def get_relocate_entries(elf_file):
         """returns a list of all the locations requiring an offset"""
+        if toolchain_prefix != "arm-none-eabi-":
+            return get_aliased_relocate_entries(elf_file)
         entries = []
 
         # Non-PIC libraries also embed absolute pointers in .text literal pools.
         readelf_relocs_process = Popen(
-            ["arm-none-eabi-readelf", "-r", elf_file], stdout=PIPE
+            [toolchain_prefix + "readelf", "-r", elf_file], stdout=PIPE
         )
         readelf_relocs_output = readelf_relocs_process.communicate()[0].decode("utf8")
         lines = readelf_relocs_output.splitlines()
@@ -213,7 +321,7 @@ def inject_metadata(
 
         # get any Global Offset Table (.got) entries
         readelf_relocs_process = Popen(
-            ["arm-none-eabi-readelf", "--sections", elf_file], stdout=PIPE
+            [toolchain_prefix + "readelf", "--sections", elf_file], stdout=PIPE
         )
         readelf_relocs_output = readelf_relocs_process.communicate()[0].decode("utf8")
         lines = readelf_relocs_output.splitlines()
@@ -232,10 +340,10 @@ def inject_metadata(
 
         return entries
 
-    nm_output = get_nm_output(target_elf)
+    nm_output = get_nm_output(target_elf, toolchain_prefix)
 
     try:
-        main_address = get_symbol_addr(nm_output, MAIN_SYMBOL)
+        main_address = image_offset(get_symbol_addr(nm_output, MAIN_SYMBOL))
     except RuntimeError as e:
         raise RuntimeError(
             "Missing app entry point! Must be `int main(void) { ... }` "
@@ -243,11 +351,13 @@ def inject_metadata(
 
     # A libpebble.a built before it had an entry point leaves main as the entry.
     try:
-        app_entry_address = get_symbol_addr(nm_output, ENTRY_PT_SYMBOL)
+        app_entry_address = image_offset(get_symbol_addr(nm_output, ENTRY_PT_SYMBOL))
     except RuntimeError:
         app_entry_address = main_address
 
-    jump_table_address = get_symbol_addr(nm_output, JUMP_TABLE_ADDR_SYMBOL)
+    jump_table_address = image_offset(
+        get_symbol_addr(nm_output, JUMP_TABLE_ADDR_SYMBOL)
+    )
 
     reloc_entries = get_relocate_entries(target_elf)
 
@@ -258,6 +368,10 @@ def inject_metadata(
         with open(resources_file, "rb") as f:
             pbpack = ResourcePack.deserialize(f, is_system=False)
             resource_crc = pbpack.get_content_crc()
+            # A pack of a set has the set's ID for a timestamp, and so does
+            # the binary that works with any pack of it.
+            if pbpack.timestamp:
+                timestamp = pbpack.timestamp
     else:
         resource_crc = 0
 
@@ -285,7 +399,9 @@ def inject_metadata(
         struct_version = read_value_at_offset(STRUCT_VERSION_ADDR, "<BB", 2)
         wide_sizes = struct_version >= FIRST_WIDE_SIZE_STRUCT_VERSION
         max_size_field = (
-            MAX_PROCESS_INFO_SIZE_FIELD if wide_sizes else MAX_PROCESS_INFO_SIZE_FIELD_16
+            MAX_PROCESS_INFO_SIZE_FIELD
+            if wide_sizes
+            else MAX_PROCESS_INFO_SIZE_FIELD_16
         )
         size_bits = 24 if wide_sizes else 16
 

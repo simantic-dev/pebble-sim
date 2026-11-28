@@ -301,6 +301,47 @@ static bool prv_app_display_fits(GSize size, bool round) {
 #endif
 }
 
+bool process_metadata_resources_match(const PebbleProcessMd *md, const ResourceVersion *version) {
+  const ResourceVersion built_with = process_metadata_get_res_version(md);
+  const PebblePlatformInfo *platform_info = process_metadata_get_platform_info(md);
+  if (platform_info && (platform_info->flags & PROCESS_PLATFORM_INFO_FLAG_RESOURCE_SET)) {
+    // No pack has an ID of zero: it is the timestamp of every pack that is of no set
+    return (built_with.timestamp != 0) && (version->timestamp == built_with.timestamp);
+  }
+  return version->crc == built_with.crc;
+}
+
+PebblePlatformAbi process_metadata_get_abi(const PebbleProcessMd *md) {
+  if (md->process_storage != ProcessStorageFlash) {
+    return (PebblePlatformAbi)CONFIG_PLATFORM_ABI_ID;
+  }
+  const PebblePlatformInfo *platform_info = process_metadata_get_platform_info(md);
+  return platform_info ? (PebblePlatformAbi)platform_info->abi : PLATFORM_ABI_ARMV7M;
+}
+
+bool process_metadata_runs_natively(const PebbleProcessMd *md) {
+  if (md->process_storage != ProcessStorageFlash) {
+    return true;
+  }
+#if defined(CONFIG_CPU_CORTEX_M) || defined(UNITTEST)
+  // The unit tests are of a watch
+  return process_metadata_get_abi(md) == PLATFORM_ABI_ARMV7M;
+#elif defined(CONFIG_APP_NATIVE_ALIASED)
+  return process_metadata_get_abi(md) == CONFIG_PLATFORM_ABI_ID;
+#else
+  return false;
+#endif
+}
+
+bool process_metadata_abi_supported(const PebbleProcessMd *md) {
+#ifdef CONFIG_SAMSA
+  if (process_metadata_get_abi(md) == PLATFORM_ABI_ARMV7M) {
+    return true;
+  }
+#endif
+  return process_metadata_runs_natively(md);
+}
+
 bool process_metadata_has_required_features(const PebbleProcessMd *md, uint32_t features) {
   const PebblePlatformInfo *platform_info = process_metadata_get_platform_info(md);
   // One built for a platform says what that platform has, which is not what it needs
@@ -315,6 +356,19 @@ GSize process_metadata_get_app_framebuffer_size(const PebbleProcessMd *md) {
 
   // An app that says which display it was built for draws to a framebuffer of that size
   const PebblePlatformInfo *platform_info = process_metadata_get_platform_info(md);
+
+#ifdef CONFIG_WATCHFACE_BEZEL
+  // Watchfaces get the classic size, but for those built for this display or every display
+  const bool built_for_display =
+      platform_info && ((platform_info->flags & PROCESS_PLATFORM_INFO_FLAG_FLEXIBLE) ||
+                        ((platform_info->display_width == PBL_DISPLAY_WIDTH) &&
+                         (platform_info->display_height == PBL_DISPLAY_HEIGHT)));
+  if (md->process_type == ProcessTypeWatchface && !built_for_display &&
+      prv_app_display_fits(GSize(144, 168), false)) {
+    return GSize(144, 168);
+  }
+#endif
+
   if (platform_info) {
     // One built for every display of its class draws to this one's
     if (platform_info->flags & PROCESS_PLATFORM_INFO_FLAG_FLEXIBLE) {
@@ -327,12 +381,15 @@ GSize process_metadata_get_app_framebuffer_size(const PebbleProcessMd *md) {
     return (known_shape && prv_app_display_fits(size, round)) ? size : display_size;
   }
 
-  const PlatformType sdk_platform = process_metadata_get_app_sdk_platform(md);
-  if (sdk_platform == PBL_PLATFORM_TYPE_CURRENT) {
+  // The firmware's own apps are built for this display
+  if (!md->is_unprivileged) {
     return display_size;
   }
 
-  // The others are known by their platform
+  // The others are known by their platform, even the one this firmware reports itself as: a
+  // platform without a type of its own takes the nearest one, of another display size
+  const PlatformType sdk_platform = process_metadata_get_app_sdk_platform(md);
+
   GSize size;
   bool round = false;
   switch (sdk_platform) {

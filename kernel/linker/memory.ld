@@ -2,8 +2,9 @@
  * SPDX-FileCopyrightText: 2026 Core Devices LLC
  * SPDX-License-Identifier: Apache-2.0
  *
- * Memory regions, derived from the Kconfig memory layout symbols
- * (defaulted per SoC/board in the Kconfig.defconfig files).
+ * Memory regions, derived from the Kconfig memory layout symbols, which
+ * default to the devicetree's memory and reserved memory nodes, or are set by
+ * the SoC or board.
  *
  * SRAM is carved up sequentially from CONFIG_SRAM_BASE: the kernel gets
  * whatever is left after the worker and the app take their share at the end.
@@ -27,8 +28,16 @@
 #define PBL_APP_RAM_SIZE \
     PBL_MAX(PBL_APP_RAM_2X_SIZE, PBL_MAX(PBL_APP_RAM_3X_SIZE, PBL_APP_RAM_4X_SIZE))
 
+/* Samsa runs the firmware calls of a worker on a stack of its own in the
+ * worker's runtime RAM, which has no room to spare. */
+#ifdef CONFIG_SAMSA_HOST_STACK_SIZE
+#define PBL_WORKER_HOST_STACK_SIZE CONFIG_SAMSA_HOST_STACK_SIZE
+#else
+#define PBL_WORKER_HOST_STACK_SIZE 0
+#endif
+
 #define PBL_WORKER_RAM_SIZE \
-    (CONFIG_WORKER_RAM_SEGMENT_SIZE + CONFIG_WORKER_RAM_RUNTIME_SIZE)
+    (CONFIG_WORKER_RAM_SEGMENT_SIZE + CONFIG_WORKER_RAM_RUNTIME_SIZE + PBL_WORKER_HOST_STACK_SIZE)
 
 #define PBL_RAM_SIZE \
     (CONFIG_SRAM_SIZE - PBL_WORKER_RAM_SIZE - PBL_APP_RAM_SIZE)

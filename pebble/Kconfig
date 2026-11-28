@@ -3,8 +3,9 @@
 
 mainmenu "Pebble Firmware Configuration"
 
-# Defaults for options of PebbleOS that the firmware wants wherever they are
-# available, which a prj.conf cannot express.
+# Defaults for options of PebbleOS that depend on the build type (release,
+# MFG), on what the architecture offers or on the devicetree, which a .conf
+# file cannot express. Anything else belongs in prj*.conf or boards/*.conf.
 
 choice FIRMWARE_AREA
     default FIRMWARE_AREA_RECOVERY if RECOVERY_FW && !MFG
@@ -22,10 +23,6 @@ config FW_FLASH_SIZE
     default $(dt_partition_size,firmware-slot-1) if PBLBOOT && FIRMWARE_SLOT = 1
     default $(dt_partition_size,firmware-slot-0) if PBLBOOT
 
-config BT_REPEAT_PAIRING_ALWAYS
-    default y if RECOVERY_FW
-    depends on BT
-
 config CONSOLE
     default y if !RELEASE || MFG
 
@@ -37,19 +34,17 @@ config COREDUMP
     default y
     depends on ARCH_HAS_COREDUMP
 
-config CPU_IDLE
-    default y
-
 config DEBUGGER_AWARE
     default y if !RELEASE
     depends on ARCH_HAS_DEBUGGER_DETECT
 
+# MFG writes the flash security registers from the shell.
 config FLASH_SHELL
     default y if MFG
     depends on FLASH && SHELL
 
 config FLASH_SHELL_TEST
-    default y if RECOVERY_FW
+    default y if MFG
     depends on FLASH_SHELL
 
 # Apps are built soft-float and call into the firmware.
@@ -57,13 +52,9 @@ config FP_SOFTFP_ABI
     default y
     depends on CPU_HAS_FPU
 
-config FS_PFS_SHELL_LITTER
-    default !RECOVERY_FW && !RELEASE
-    depends on FS_PFS && SHELL
-
 config GH3X2X_ALGO
-    default !RECOVERY_FW || MFG
-    depends on HRM_GH3X2X && BOARD_OBELIX
+    default n if RECOVERY_FW && !MFG
+    depends on HRM_GH3X2X
 
 config HRM_GH3X2X_FACTORY_TEST
     default y if MFG
@@ -73,32 +64,45 @@ config KERNEL_STACK_GUARD
     default y
     depends on ARCH_HAS_STACK_GUARD
 
-config LOG_HASHED
+config PP_TRANSPORT_CONSOLE
     default y
-    depends on LOG && !QEMU
+    depends on PP && CONSOLE
 
-config PP_TRANSPORT_GATT_SYSTEM_ONLY
-    default y if RECOVERY_FW
-    depends on PP_TRANSPORT_GATT
+config PP_TRANSPORT_GATT
+    default y
+    depends on PP && BT
 
 config SHELL
     default y
     depends on CONSOLE
 
-config TEMP_SHELL
-    default n if RECOVERY_FW
-    depends on TEMP && SHELL
-
 config USERSPACE
     default y
     depends on ARCH_HAS_USERSPACE
 
-config SAMSA
-    default y
-    depends on SOC_POSIX && !RECOVERY_FW
-
 # The SDK platform, and what follows from it.
 rsource "Kconfig.platform"
+
+config APP_NATIVE_RISCV32
+    bool "Run riscv32 apps natively"
+    depends on CPU_RISCV && PLATFORM_ABI = "riscv32"
+    default y
+    help
+      Run third-party apps built for the platform's riscv32 ABI from app
+      RAM, through the instruction-bus window of the RAM. Nothing protects
+      the system from them: this port has no userspace or PMP, so an app
+      runs privileged, as a built-in app does, and can write any memory.
+
+config APP_NATIVE_XTENSA
+    bool "Run Xtensa LX7 apps natively"
+    depends on CPU_XTENSA && PLATFORM_ABI = "xtensa" && !RECOVERY_FW
+    default y
+    help
+      Run trusted windowed-ABI apps from the instruction alias of app RAM.
+      These apps execute with the same memory access as the firmware.
+
+config APP_NATIVE_ALIASED
+    def_bool APP_NATIVE_RISCV32 || APP_NATIVE_XTENSA
 
 # RAM of the apps of the legacy SDK execution environments. 2.x apps are
 # rectangular; 3.x apps are those of the frozen platform of the same shape
@@ -126,6 +130,17 @@ config SCREEN_COLOR_DEPTH_BITS
     int
     default 8 if PLATFORM_COLOR
     default 1
+
+config FIRMWARE_UPDATE
+    bool "Firmware updates from the phone"
+    default n if SOC_ESP32C3 || SOC_ESP32S3
+    default y
+    help
+      Take a new firmware, recovery firmware or system resources from the
+      phone. Without it, a firmware update start is answered as cancelled
+      and those PutBytes objects are refused. Off where no bootloader can
+      install or fall back from an update, e.g. the ESP32-C3, whose ROM
+      boots the code partition directly.
 
 config RECOVERY_FW
     bool "Recovery firmware (PRF)"
@@ -178,6 +193,159 @@ config APP_SCALING
       Scale legacy lower-resolution apps to the current display via
       the compositor.
 
+config WATCHFACE_BEZEL
+    bool "Watchfaces at 144x168 in a black bezel"
+    depends on !PLATFORM_ROUND
+    help
+      Give watchfaces a 144x168 framebuffer, which the compositor
+      centres on the display in a black bezel, for displays whose pixels
+      are small enough that a watchface drawn to the whole display would
+      be too large. A watchface built for this display, or for every
+      display, keeps the whole of it.
+
+choice SYSTEM_UI_FONT_CHOICE
+    prompt "Typeface of the system UI"
+    default SYSTEM_UI_FONT_ATKINSON_NEXT if PLATFORM_XTEINKX4 || PLATFORM_XTEINKX4PRO
+    default SYSTEM_UI_FONT_GOTHIC
+    help
+      The system's own windows and the built-in apps that fill the display
+      draw their Gothic text in this typeface, on Gothic's line heights.
+      Third-party apps and framed watchfaces keep Gothic, as their layouts
+      are made for its metrics.
+
+config SYSTEM_UI_FONT_GOTHIC
+    bool "Gothic"
+
+config SYSTEM_UI_FONT_ATKINSON_NEXT
+    bool "Atkinson Hyperlegible Next, at panel resolution"
+    select SYSTEM_UI_FONT
+    select SYSTEM_UI_FONT_SCALE2
+
+config SYSTEM_UI_FONT_LITERATA_ATKINSON
+    bool "Literata text with Atkinson Hyperlegible Next titles, at panel resolution"
+    select SYSTEM_UI_FONT
+    select SYSTEM_UI_FONT_SCALE2
+    help
+      Regular text (bodies, subtitles) in Literata, bold text (titles,
+      menus) in Atkinson Hyperlegible Next.
+
+config SYSTEM_UI_FONT_LOCAL_BOOKERLY_ATKINSON
+    bool "Local: Bookerly text, Atkinson Hyperlegible Next titles (development only)"
+    select SYSTEM_UI_FONT
+    select SYSTEM_UI_FONT_SCALE2
+    select SYSTEM_UI_FONT_LOCAL
+    help
+      Bookerly is proprietary (Amazon / Dalton Maag): its files come
+      from SYSTEM_UI_FONT_LOCAL_DIR on this machine, are never in the
+      tree, and a build with them must not leave the machine.
+
+config SYSTEM_UI_FONT_LOCAL_BOOKERLY
+    bool "Local: Bookerly for all text (development only)"
+    select SYSTEM_UI_FONT
+    select SYSTEM_UI_FONT_SCALE2
+    select SYSTEM_UI_FONT_LOCAL
+    help
+      As SYSTEM_UI_FONT_LOCAL_BOOKERLY_ATKINSON, with Bookerly Bold for
+      titles too.
+
+config SYSTEM_UI_FONT_NOTO_SANS_CONDENSED
+    bool "Noto Sans Condensed"
+    select SYSTEM_UI_FONT
+
+config SYSTEM_UI_FONT_PLEX_SANS_CONDENSED
+    bool "IBM Plex Sans Condensed"
+    select SYSTEM_UI_FONT
+
+endchoice
+
+config SYSTEM_UI_FONT
+    bool
+    help
+      The system UI has a typeface of its own, the UI_SANS_* fonts.
+
+config SYSTEM_UI_FONT_LOCAL
+    bool
+
+config SYSTEM_UI_FONT_LOCAL_DIR
+    string "Directory of the local, non-redistributable UI fonts"
+    depends on SYSTEM_UI_FONT_LOCAL
+    default "~/dev/pebbleos-local-fonts/bookerly"
+    help
+      Holds Bookerly-Regular.ttf and Bookerly-Bold.ttf. Development only:
+      do not commit these fonts or anything built from them.
+
+config SMALLER_TEXT_BY_DEFAULT
+    bool "Start with the Smaller system and notification text setting"
+    default y if BOARD_XTEINK_X4 || BOARD_XTEINK_X4_PRO
+    help
+      Use the Smaller size in Settings until a saved size is available.
+
+config SYSTEM_UI_FONT_SCALE2
+    bool
+    help
+      The UI_SANS_* fonts are stored at twice their resolution, for a
+      display scaled by two.
+
+config FRAMEBUFFER_SCALE2
+    bool "Framebuffers at twice the display's resolution"
+    depends on SCREEN_COLOR_DEPTH_BITS = 1
+    help
+      Each pixel of the display's size (PBL_DISPLAY_WIDTH by
+      PBL_DISPLAY_HEIGHT, the size layouts use) is 2x2 pixels in every
+      framebuffer, and the display gets the framebuffer at that resolution.
+      Text in fonts stored at panel resolution is drawn at it; everything
+      else is drawn as 2x2 blocks.
+
+config FRAMEBUFFER_SCALE2_SHAPES
+    bool "Draw shapes at twice the display's resolution"
+    default y
+    depends on FRAMEBUFFER_SCALE2
+    help
+      Slanted lines, circles, arcs and paths, and the PDC icons made of
+      them, at the framebuffer's resolution rather than as 2x2 blocks.
+      Costs about 0.7 M instructions on a launcher frame with its icons
+      (about 20 %).
+
+config TEXT_DETAIL
+    bool "Text edges at panel resolution and in grey"
+    default y
+    depends on SYSTEM_UI_FONT_SCALE2 && !RECOVERY_FW
+    help
+      Record the edge pixels of the system UI's text, so a display that
+      shows each pixel as 2x2 panel pixels can draw them at panel
+      resolution (sub-pixel edges) or in grey, without a frame at panel
+      resolution. Choose with the console's "text mode" command.
+
+if TEXT_DETAIL
+
+config TEXT_DETAIL_GLYPHS
+    int "Glyphs recorded for the grey pass"
+    depends on FRAMEBUFFER_SCALE2
+    range 16 4096
+    default 384
+    help
+      At twice the display's size, the glyphs of the system UI's text on
+      the display, 20 bytes each, which the grey pass draws the levels of.
+      Further glyphs use their monochrome coverage when the pool is full.
+
+config TEXT_DETAIL_CELLS
+    int "Edge pixels recorded"
+    depends on !FRAMEBUFFER_SCALE2
+    range 8 16376
+    default 10400
+    help
+      Edge pixels of text on the display that get their detail; the pool
+      takes 2.25 bytes each, plus 2 bytes per display row. A full
+      notification takes about 8,500 with grey edges, packed in rows of
+      8. A frame whose text does not fit is shown without detail.
+
+config TEXT_DETAIL_DEFAULT_MODE
+    int "Mode at boot (0 none, 1 grey, 2 sub-pixel edges, 3 both)"
+    range 0 3
+    default 3
+
+endif # TEXT_DETAIL
+
 config ORIENTATION_MANAGER
     bool "Orientation manager UI"
     help
@@ -191,9 +359,17 @@ config MODDABLE_XS
     help
       Build Moddable XS support for running JavaScript apps.
 
+config RAMFUNC_DRAWING
+    bool "Run the hottest drawing code from RAM"
+    depends on RAMFUNC
+    help
+      Link the functions most of a UI redraw runs (about 16 KiB: raster
+      and text primitives, the heap, memset and memcpy) into RAM, for
+      SoCs that run in place from flash through a small cache, where a
+      redraw otherwise waits on cache misses. Costs that much RAM.
+
 config MMAP_RESOURCES
     bool "Memory-mapped (zero-copy) resource reads"
-    default y if SOC_SF32LB52
     help
       Serve read-only system resources as direct pointers into
       memory-mapped flash instead of copying them out.
@@ -218,7 +394,6 @@ menu "Debug & instrumentation"
 
 config QEMU_SERIAL
     bool "QEMU serial protocol"
-    default y if QEMU || SOC_POSIX
     help
       The Pebble protocol and the emulator's controls (battery, taps,
       time format, ...) over the board's QEMU_UART, framed as libpebble2's

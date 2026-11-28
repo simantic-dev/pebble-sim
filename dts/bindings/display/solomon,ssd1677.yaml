@@ -1,0 +1,189 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/solomon,ssd1677.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Solomon Systech SSD1677 e-paper controller
+
+maintainers:
+  - Eric Migicovsky <eric@repebble.com>
+
+description:
+  Black and white e-paper controller of up to 960x680 pixels, an SPI device
+  with a data/command line and a BUSY output, high while it works. The
+  framebuffer is scaled up by a whole number, centred on the panel and turned
+  by the mounting rotation, as for qemu,esp-rgb. The panel's own size, as its
+  controller scans it, is panel-width by panel-height, swapped at 90 or 270.
+
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+properties:
+  compatible:
+    const: solomon,ssd1677
+
+  reg:
+    maxItems: 1
+
+  dc-gpios:
+    maxItems: 1
+    description: Data/command select, high for data.
+
+  reset-gpios:
+    maxItems: 1
+
+  busy-gpios:
+    maxItems: 1
+    description: BUSY, active while the controller works.
+
+  probe-data-gpios:
+    maxItems: 1
+    description: Bidirectional SPI data pin for identifying alternate X4 Pro panel controllers.
+
+  probe-clock-gpios:
+    maxItems: 1
+    description: SPI clock pin used during GPIO controller identification.
+
+  pinctrl-0:
+    description: Restore these SPI pins after identification.
+
+  pinctrl-names:
+    const: default
+
+  width:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Framebuffer width, in pixels.
+
+  height:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Framebuffer height, in pixels.
+
+  panel-width:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Panel width as mounted, in pixels.
+
+  panel-height:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Panel height as mounted, in pixels.
+
+  scale:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Panel pixels per framebuffer pixel, in each direction.
+    minimum: 1
+    default: 1
+
+  rotation:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Mounting rotation of the panel, counter-clockwise, in degrees.
+    enum: [0, 90, 180, 270]
+    default: 0
+
+  full-refresh-interval:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Updates from one full refresh to the next, the others fast ones; 0 for
+      fast refreshes only, after the first.
+    default: 20
+
+  fast-frames:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Main phase of the fast refresh waveform, in frames of 20 ms. 0 runs the
+      panel's own OTP waveform, which has 16, plus 5 frames of the other
+      phases. Fewer frames refresh faster and draw a lighter black; the
+      periodic full refresh clears what they leave behind.
+    maximum: 255
+    default: 0
+
+  fast-differential:
+    type: boolean
+    description: |
+      The fast waveform drives only the pixels that change, for its main
+      phase alone, and leaves the others undriven: fast-frames frames of 20 ms
+      at the default frame rate, without the other phases' 5.
+
+  fast-frame-rate:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      Frame rate code of the fast waveform, as its LUT stores it, one nibble
+      per group of phases; 0x22 is the panel's own, 50 Hz.
+    maximum: 255
+    default: 0x22
+
+  source-voltage:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: |
+      VSH1, VSH2 and VSL codes of the fast waveform (command 0x04); the
+      panel's own are 0x41 (15 V), 0xA8 (5 V) and 0x32 (-15 V). The
+      controller allows up to 0x4B (17 V) and 0x3A (-17 V).
+    minItems: 3
+    maxItems: 3
+
+  topup-frames:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      Main phase of the idle top up, in frames; 0 for none. Once no update
+      has come for idle-ms, every pixel of the rows fast refreshes changed
+      since the last top up or clean refresh gets that much more drive
+      towards its colour: short drives leave greys behind.
+    maximum: 255
+    default: 0
+
+  full-refresh-on-idle:
+    type: boolean
+    description: |
+      The periodic clean refresh waits until no update has come for idle-ms,
+      or for twice full-refresh-interval updates.
+
+  idle-ms:
+    description: Time without updates before idle work, in ms.
+    maximum: 65535
+    default: 150
+
+  power-off-idle-ms:
+    description: |
+      Time without refreshes before the panel's analog supplies go off, in
+      ms; 0 to leave them on. The next refresh turns them on again, 80 ms
+      more.
+    default: 0
+
+dependencies:
+  probe-data-gpios: [probe-clock-gpios, pinctrl-0, pinctrl-names]
+  probe-clock-gpios: [probe-data-gpios]
+
+required:
+  - compatible
+  - reg
+  - dc-gpios
+  - reset-gpios
+  - busy-gpios
+  - width
+  - height
+  - panel-width
+  - panel-height
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    spi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        display@0 {
+            compatible = "solomon,ssd1677";
+            reg = <0>;
+            spi-max-frequency = <10000000>;
+            dc-gpios = <&gpio 4 GPIO_ACTIVE_HIGH>;
+            reset-gpios = <&gpio 5 GPIO_ACTIVE_LOW>;
+            busy-gpios = <&gpio 6 GPIO_ACTIVE_HIGH>;
+            width = <480>;
+            height = <800>;
+            panel-width = <480>;
+            panel-height = <800>;
+            rotation = <270>;
+        };
+    };

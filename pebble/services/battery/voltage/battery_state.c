@@ -22,6 +22,10 @@
 
 #include <kernel/events.h>
 
+#ifdef CONFIG_SERVICE_BATTERY_LOG
+#include "../battery_log.h"
+#endif
+
 PBL_LOG_MODULE_DECLARE(service_battery, CONFIG_SERVICE_BATTERY_LOG_LEVEL);
 
 #ifdef DEBUG_BATTERY_STATE
@@ -187,8 +191,12 @@ static void prv_update_state(void *force_update) {
     }
   }
 
+  struct pbl_charger_measurements sample = {.soc_percent = -1};
+  if (pbl_charger_get_measurements(CHARGER, &sample) != 0) {
+    return;
+  }
   s_last_battery_state.voltage =
-      prv_filter_voltage(s_last_battery_state.voltage, prv_get_millivolts());
+      prv_filter_voltage(s_last_battery_state.voltage, sample.voltage_mv);
   bool charging = (s_last_battery_state.connection == ConnectionStateChargingPlugged);
 
   // Update Percent & Filtering
@@ -197,7 +205,12 @@ static void prv_update_state(void *force_update) {
   bool likely_stable = prv_is_stable(&s_last_battery_state);
 
   uint32_t new_charge_percent =
+      sample.soc_percent >= 0 ? pbl_ratio32_from_percent(sample.soc_percent) :
       battery_curve_sample_ratio32_charge_percent(s_last_battery_state.voltage, charging);
+#ifdef CONFIG_SERVICE_BATTERY_LOG
+  battery_log_sample(s_last_battery_state.voltage, pbl_ratio32_to_percent(new_charge_percent),
+                     s_last_battery_state.connection != ConnectionStateDischargingUnplugged);
+#endif
   // Allow updates iff:
   // - We are charging
   // - We are discharging and:

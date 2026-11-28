@@ -37,8 +37,13 @@ from fdt import DtError
 
 SPEC_DIRS = ("drivers", "kernel", "soc")
 # Functions of a block that share its registers are sibling nodes at its address, as the I2C and
-# SPI of a serial engine, and only one of them may be enabled
-DTC_FLAGS = ("-Wno-unique_unit_address", "-Wunique_unit_address_if_enabled")
+# SPI of a serial engine, and only one of them may be enabled. A display controller may be the
+# quad SPI host of its panel, so not every SPI bus is named spi.
+DTC_FLAGS = (
+    "-Wno-unique_unit_address",
+    "-Wunique_unit_address_if_enabled",
+    "-Wno-spi_bus_bridge",
+)
 SPEC_KEYS = {
     "compatible",
     "config",
@@ -53,10 +58,10 @@ SPEC_KEYS = {
     "header",
     "drives",
 }
-CHILDREN_KEYS = {"node", "names"}
+CHILDREN_KEYS = {"node", "names", "property"}
 CLASS_KEYS = {"class", "type", "include", "provides", "device", "roles"}
 ROLE_KEYS = {"symbol", "include"}
-PINCTRL_KEYS = {"define", "pin", "flags", "values"}
+PINCTRL_KEYS = {"define", "pin", "pinmux", "flags", "values"}
 IDS_KEYS = {"cell", "header", "prefix", "values"}
 IDS_VALUES_KEYS = {"header", "prefix"}
 ARG_KINDS = {
@@ -85,6 +90,7 @@ ARG_KINDS = {
     "pwm",
     "supply",
     "consumers",
+    "dma-window",
     "phandle",
     "reset",
     "flags",
@@ -97,6 +103,7 @@ ARG_OPTIONS = {
     "wrap",
     "field",
     "of",
+    "entry",
     "child",
     "index",
     "item",
@@ -167,9 +174,9 @@ class Spec:
         self.drives = as_list(data.get("drives", []))
         self.children = data.get("children")
         if self.children is not None:
-            check_keys(
-                self._error, self.children, CHILDREN_KEYS, "children", ("names",)
-            )
+            check_keys(self._error, self.children, CHILDREN_KEYS, "children")
+            if ("names" in self.children) == ("property" in self.children):
+                raise self._error("'children' needs one of 'names' and 'property'")
             if not self.define:
                 raise self._error("'children' needs 'define'")
         self.sources = []
@@ -205,7 +212,11 @@ class Spec:
         self.symbols = symbol
         # A SoC singleton defined from the tree keeps the name C code knows it by
         self.singleton = symbol[self.classes[0]] if self.define and fixed else None
-        self.file = c_ident(self.compatibles[0])
+        # A spec for several compatibles names its instance file after itself
+        if len(self.compatibles) > 1:
+            self.file = c_ident(Path(path).name.removesuffix(".dtmap.yaml"))
+        else:
+            self.file = c_ident(self.compatibles[0])
         self._check_args(self.args)
         # Arguments a node may lack end a variadic macro, so only they may follow one
         trailing = [
@@ -217,9 +228,9 @@ class Spec:
         if any(trailing[i] and not all(trailing[i:]) for i in range(len(trailing))):
             raise self._error("optional and list arguments must come last")
         if self.pinctrl is not None:
-            check_keys(
-                self._error, self.pinctrl, PINCTRL_KEYS, "pinctrl", ("define", "pin")
-            )
+            check_keys(self._error, self.pinctrl, PINCTRL_KEYS, "pinctrl", ("define",))
+            if ("pin" in self.pinctrl) == ("pinmux" in self.pinctrl):
+                raise self._error("'pinctrl' needs one of 'pin' and 'pinmux'")
             if len(self.classes) != 1:
                 raise self._error("'pinctrl' needs exactly one class")
         # Models named by a compatible argument, which Kconfig can build only when present
@@ -481,6 +492,33 @@ def translate(node, address):
     return address
 
 
+def dma_window(node):
+    """(CPU address, bus address, size) of the one dma-ranges entry of the bus a bus master is on
+    that moves addresses, as a memory window it reaches elsewhere than the CPU, or None."""
+    bus = node.parent
+    while bus is not None and not bus.has("dma-ranges"):
+        bus = bus.parent
+    if bus is None:
+        return None
+    entries = bus.u32s("dma-ranges") if bus.props["dma-ranges"] else []
+    child_cells = bus.cells_of("#address-cells", 2)
+    parent_cells = bus.address_cells
+    size_cells = bus.cells_of("#size-cells", 1)
+    step = child_cells + parent_cells + size_cells
+    moved = []
+    for start in range(0, len(entries), step):
+        child = cells_number(entries[start : start + child_cells])
+        parent = cells_number(
+            entries[start + child_cells : start + child_cells + parent_cells]
+        )
+        size = cells_number(entries[start + child_cells + parent_cells : start + step])
+        if child != parent:
+            moved.append((parent, child, size))
+    if len(moved) > 1:
+        raise DtError(f"{node.path}: {bus.path} moves more than one dma-ranges window")
+    return moved[0] if moved else None
+
+
 def enabled(node):
     while node is not None:
         if not node.status_okay:
@@ -558,10 +596,12 @@ class Generator:
             if owner is None:
                 continue
             for spec in self._device(owner).specs:
-                children = spec.children or {}
-                if children.get("node") == container and name in children.get(
-                    "names", {}
-                ):
+                children = spec.children
+                if children is None or children.get("node") != container:
+                    continue
+                if "property" in children and node.has(children["property"]):
+                    return Device(node, [spec], owner=self._device(owner))
+                if name in children.get("names", {}):
                     return Device(
                         node,
                         [spec],
@@ -666,16 +706,22 @@ class Generator:
             self.declarations.append(declaration)
 
     def _instantiate_children(self, dev, spec):
-        """One instance per child, matched by name, as the regulators of a PMIC."""
+        """One instance per child, matched by name, as the regulators of a PMIC, or having a
+        property, as the ports of a pin controller."""
         container = dev.node
         if "node" in spec.children:
             name = spec.children["node"]
             container = next((c for c in dev.node.children if c.name == name), None)
             if container is None:
                 return
-        names = spec.children["names"]
+        prop = spec.children.get("property")
+        names = spec.children.get("names", {})
         for child in container.children:
             if not enabled(child):
+                continue
+            if prop is not None:
+                if child.has(prop):
+                    self._instantiate(self._device(child), spec)
                 continue
             name = child.name.split("@")[0]
             if name not in names:
@@ -980,10 +1026,18 @@ class Generator:
         spec = pinctrl
         flags = spec.get("flags", {})
         values = spec.get("values", {})
-        unknown = set(group.props) - {"pins", "function", "phandle", *flags, *values}
+        if "pinmux" in spec:
+            known = {"pinmux", "phandle"}
+            first = spec["pinmux"].format(value=pin)
+        else:
+            known = {"pins", "function", "phandle"}
+            first = spec["pin"].format(
+                pin=pin, function=group.string("function").upper()
+            )
+        unknown = set(group.props) - {*known, *flags, *values}
         if unknown:
             raise DtError(f"{group.path}: unsupported {sorted(unknown)}")
-        parts = [spec["pin"].format(pin=pin, function=group.string("function").upper())]
+        parts = [first]
         parts += [name for prop, name in flags.items() if group.has(prop)]
         parts += [
             name.format(value=group.u32(prop))
@@ -1024,7 +1078,11 @@ class Generator:
         pins = [
             self._pin(spec.pinctrl, pin, group)
             for group in state.children
-            for pin in group.strings("pins")
+            for pin in (
+                group.u32s("pinmux")
+                if "pinmux" in spec.pinctrl
+                else group.strings("pins")
+            )
         ]
         out = self.outputs[instance_file(spec)]
         out.includes.add("devicetree/devices.h")
@@ -1108,10 +1166,13 @@ class Generator:
         if "of" in arg:
             if not node.has(arg["of"]):
                 return None
-            # The first phandle, as all cells of nvmem-cells are in the same device
-            node = self.tree.phandle(
-                node.u32s(arg["of"])[0], f"{dev.node.path}: '{arg['of']}'"
-            )
+            # The first phandle, as all cells of nvmem-cells are in the same device, unless
+            # another entry of a list of phandles is asked for, as a DMA controller of a router
+            entry = arg.get("entry", 0)
+            phandles = node.u32s(arg["of"])
+            if entry >= len(phandles):
+                raise dev.error(f"'{arg['of']}' has no entry {entry}")
+            node = self.tree.phandle(phandles[entry], f"{dev.node.path}: '{arg['of']}'")
         if kind == "name":
             return f'"{dev.name}"'
         # The node read, as the memory a device is given with memory-region
@@ -1282,6 +1343,11 @@ class Generator:
                 return None
             target = self.tree.phandle(node.u32(key), f"{node.path}: '{key}'")
             return self._provided(dev, target, arg.get("as", key), [])
+        if kind == "dma-window":
+            window = dma_window(node)
+            if window is None:
+                return None
+            return "PBL_DMA_WINDOW({:#x}, {:#x}, {:#x})".format(*window)
         if kind == "consumers":
             count = self._consumers(dev, key, int(arg.get("index", 0)))
             return None if count is None else str(count)
@@ -1352,7 +1418,8 @@ class Generator:
 PARTITIONS = "fixed-partitions"
 PARTITIONS_HEADER = "devicetree/partitions.h"
 REGS_HEADER = "devicetree/regs.h"
-REGS_KEYS = {"config", "labels"}
+REGS_KEYS = {"config", "labels", "props", "compatible"}
+REGS_PROP_KEYS = {"label", "prop", "cell"}
 KIB = 1024
 MIB = 1024 * KIB
 
@@ -1495,32 +1562,100 @@ def load_regs(srcdir, appdir=None):
         def error(message, path=path):
             return DtError(f"{path}: {message}")
 
-        check_keys(error, data, REGS_KEYS, "regs", ("config", "labels"))
-        regs.append((data["config"], as_list(data["labels"]), error))
+        check_keys(error, data, REGS_KEYS, "regs", ("config",))
+        if not REGS_KEYS.intersection(data) - {"config"}:
+            raise error("neither 'labels', 'props' nor 'compatible'")
+        props = as_list(data.get("props", []))
+        for prop in props:
+            check_keys(error, prop, REGS_PROP_KEYS, "props", ("label", "prop"))
+        labels = as_list(data.get("labels", []))
+        regs.append((data["config"], labels, props, data.get("compatible"), error))
     return regs
 
 
+def _reg_defines(node, name, index, error):
+    cells = node.u32s("reg") if node.has("reg") else []
+    entry = node.address_cells + node.size_cells
+    if len(cells) < entry * (index + 1):
+        raise error(f"{node.path} has no reg")
+    cells = cells[entry * index :]
+    address = translate(node, cells_number(cells[: node.address_cells]))
+    size = cells_number(cells[node.address_cells : entry])
+    return {
+        f"PBL_DT_REG_{name}": f"{address:#x}UL",
+        f"PBL_DT_SIZE_{name}": f"{size:#x}UL",
+    }
+
+
+def _compatible_defines(tree, compatible, error):
+    found = (
+        [] if tree is None else [n for n in tree.nodes() if compatible in n.compatibles]
+    )
+    found = [node for node in found if enabled(node)]
+    if len(found) != 1:
+        raise error(f"{len(found)} enabled '{compatible}' nodes, not one")
+    node = found[0]
+    # A function of a multi-function device has the resources of its parent
+    if not node.has("reg"):
+        node = node.parent
+    name = c_ident(compatible).upper()
+    defines = _reg_defines(node, name, 0, error)
+    if node.has("interrupts"):
+        defines[f"PBL_DT_IRQ_{name}"] = str(node.u32s("interrupts")[0])
+    if node.has("clocks"):
+        clocks = node.u32s("clocks")
+        if len(clocks) < 2:
+            raise error(f"{node.path} has a clock without a specifier")
+        defines[f"PBL_DT_CLK_{name}"] = f"{clocks[1]}U"
+    return defines
+
+
 def regs_header(tree, regs, config):
-    """PBL_DT_REG_* of the nodes named in the *.regs.yaml of enabled code."""
+    """PBL_DT_REG_* and PBL_DT_SIZE_* of the nodes named in the *.regs.yaml of enabled code,
+    PBL_DT_PROP_* of the properties they name, and the registers, interrupt and clock of the one
+    enabled node of the compatible they name."""
     lines = ["/* Generated from the board devicetree. */", "", "#pragma once"]
     nodes = {}
     if tree is not None:
         nodes = {label: node for node in tree.nodes() for label in node.labels}
     defines = {}
-    for symbol, labels, error in regs:
+    for symbol, labels, props, compatible, error in regs:
         if symbol not in config:
             continue
-        for label in labels:
+        if compatible is not None:
+            defines.update(_compatible_defines(tree, compatible, error))
+        for item in props:
+            node = nodes.get(item["label"])
+            if node is None:
+                raise error(f"no node labelled '{item['label']}'")
+            if not node.has(item["prop"]):
+                raise error(f"{node.path} has no '{item['prop']}'")
+            name = c_ident(f"{item['label']}_{item['prop']}").upper()
+            if "cell" in item:
+                cells = node.u32s(item["prop"])
+                if item["cell"] >= len(cells):
+                    raise error(
+                        f"{node.path}: '{item['prop']}' has no cell {item['cell']}"
+                    )
+                value = cells[item["cell"]]
+            else:
+                value = node.u32(item["prop"])
+            defines[f"PBL_DT_PROP_{name}"] = f"{value}U"
+        for item in labels:
+            label, reg = (
+                (item, None) if isinstance(item, str) else (item["label"], item["reg"])
+            )
             node = nodes.get(label)
             if node is None:
                 raise error(f"no node labelled '{label}'")
-            cells = node.u32s("reg") if node.has("reg") else []
-            entry = node.address_cells + node.size_cells
-            if len(cells) < entry:
-                raise error(f"{node.path} has no reg")
-            address = translate(node, cells_number(cells[: node.address_cells]))
-            name = c_ident(label).upper()
-            defines[f"PBL_DT_REG_{name}"] = f"{address:#x}UL"
+            index = 0
+            if reg is not None:
+                names = node.strings("reg-names") if node.has("reg-names") else []
+                if reg not in names:
+                    raise error(f"{node.path} has no reg named '{reg}'")
+                index = names.index(reg)
+            name = c_ident(label if reg is None else f"{label}_{reg}").upper()
+            defines.update(_reg_defines(node, name, index, error))
     if defines:
         lines.append("")
         lines += [f"#define {name} {value}" for name, value in sorted(defines.items())]
@@ -1531,17 +1666,33 @@ ROLES_SOURCE = "devicetree/roles.c"
 ROLES_FILE = "roles.yml"
 
 
-def role_files(srcdir, board, revision, appdir=None, addons=()):
-    """The roles files of the board, its revision, its add-ons and the application, in the order
-    they apply."""
+def qualifiers(core=None, variant=None):
+    """The suffixes of the files of a board's core and variant, in the order they apply: the
+    core's, the variant's, then those of the core with the variant, as ``<core>_<variant>``."""
+    names = [name for name in (core, variant) if name]
+    if core and variant:
+        names.append(f"{core}_{variant}")
+    return names
+
+
+def role_files(
+    srcdir, board, revision, appdir=None, addons=(), core=None, variant=None
+):
+    """The roles files of the board, its revision, its core and variant, its add-ons and the
+    application, in the order they apply."""
+    suffixes = qualifiers(core, variant)
     paths = [Path(srcdir) / "boards" / board / ROLES_FILE]
     if revision:
         paths.append(Path(srcdir) / "boards" / board / f"roles.{revision}.yml")
+    paths += [Path(srcdir) / "boards" / board / f"roles.{q}.yml" for q in suffixes]
     paths += [addon_dir(srcdir, addon) / ROLES_FILE for addon in addons]
     if appdir is not None:
         paths += [
             Path(appdir) / ROLES_FILE,
             Path(appdir) / "boards" / f"{board}.{ROLES_FILE}",
+        ]
+        paths += [
+            Path(appdir) / "boards" / f"{board}_{q}.{ROLES_FILE}" for q in suffixes
         ]
     return paths
 
@@ -1631,9 +1782,23 @@ def write_if_changed(path, content):
     path.write_bytes(content)
 
 
-def find_dts(srcdir, board, revision):
+def find_dts(srcdir, board, revision, core=None, variant=None):
+    """The tree of the board: the most specific of its core with its variant, its core, or its
+    variant on a board without cores, each of its revision first, then of the revision, then the
+    board's."""
     directory = Path(srcdir) / "boards" / board
-    names = ([f"{board}_{revision}.dts"] if revision else []) + [f"{board}.dts"]
+    if core:
+        suffixes = [f"{core}_{variant}", core] if variant else [core]
+    else:
+        suffixes = [variant] if variant else []
+    names = []
+    for suffix in suffixes:
+        if revision:
+            names.append(f"{board}_{revision}_{suffix}.dts")
+        names.append(f"{board}_{suffix}.dts")
+    if revision:
+        names.append(f"{board}_{revision}.dts")
+    names.append(f"{board}.dts")
     return next(
         (directory / name for name in names if (directory / name).exists()), None
     )
@@ -1682,14 +1847,19 @@ def addon_connectors(srcdir, addon):
     return connectors
 
 
-def addon_overlays(srcdir, board, addons):
-    """The devicetree overlays of the add-ons, each followed by the one for the board."""
+def addon_overlays(srcdir, board, addons, core=None, variant=None):
+    """The devicetree overlays of the add-ons, each followed by those for the board and its core
+    and variant."""
     paths = []
     for addon in addons:
         directory = addon_dir(srcdir, addon)
         paths += [
             directory / f"{addon}.overlay",
             directory / "boards" / f"{board}.overlay",
+        ]
+        paths += [
+            directory / "boards" / f"{board}_{q}.overlay"
+            for q in qualifiers(core, variant)
         ]
     return paths
 
@@ -1705,11 +1875,16 @@ def missing_connectors(tree, srcdir, addons):
     return missing
 
 
-def overlay_files(board, appdir):
+def overlay_files(board, appdir, core=None, variant=None):
     """The devicetree overlays of the application, in the order they apply."""
     if appdir is None:
         return []
-    return [Path(appdir) / "app.overlay", Path(appdir) / "boards" / f"{board}.overlay"]
+    paths = [Path(appdir) / "app.overlay", Path(appdir) / "boards" / f"{board}.overlay"]
+    paths += [
+        Path(appdir) / "boards" / f"{board}_{q}.overlay"
+        for q in qualifiers(core, variant)
+    ]
+    return paths
 
 
 def compile_dts(dts, cc, include_dirs, outdir, overlays=()):
@@ -1805,7 +1980,17 @@ def kconfig_text(tree, compatibles):
     return "\n".join(lines) + "\n"
 
 
-def configure(srcdir, builddir, board, revision, cc, appdir=None, addons=()):
+def configure(
+    srcdir,
+    builddir,
+    board,
+    revision,
+    cc,
+    appdir=None,
+    addons=(),
+    core=None,
+    variant=None,
+):
     """Prepare what Kconfig needs.
 
     Writes Kconfig.dt. Returns the dtb or None, the files generated from it, and what it all depends on.
@@ -1819,13 +2004,13 @@ def configure(srcdir, builddir, board, revision, cc, appdir=None, addons=()):
         {src for group in specs.values() for spec in group for src in spec.sources}
     )
     tree, dtb = None, None
-    dts = find_dts(srcdir, board, revision)
+    dts = find_dts(srcdir, board, revision, core, variant)
     deps += [str(addon_dir(srcdir, addon) / ADDON_FILE) for addon in addons]
     overlays = [
         path
         for path in [
-            *addon_overlays(srcdir, board, addons),
-            *overlay_files(board, appdir),
+            *addon_overlays(srcdir, board, addons, core, variant),
+            *overlay_files(board, appdir, core, variant),
         ]
         if path.exists()
     ]
@@ -1851,7 +2036,7 @@ def configure(srcdir, builddir, board, revision, cc, appdir=None, addons=()):
         (outdir / "board.dtb").unlink(missing_ok=True)
     kconfig = outdir / "Kconfig.dt"
     write_if_changed(kconfig, kconfig_text(tree, kconfig_compatibles(specs)).encode())
-    paths = role_files(srcdir, board, revision, appdir, addons)
+    paths = role_files(srcdir, board, revision, appdir, addons, core, variant)
     deps += [str(path) for path in paths if path.exists()]
     roles = merge_roles(paths)
     write_if_changed(

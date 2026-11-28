@@ -31,12 +31,22 @@ config NIMBLE_HCI_SF32LB
 
 config NIMBLE_HCI_UART
     bool "H4 over UART"
-    depends on QEMU || UART_POSIX_BT_HCI
+    depends on QEMU || UART_POSIX_BT_HCI || BOARD_QEMU_ESP32C3
     help
       Talk H4 HCI to an external controller over the board's BT_HCI_UART.
-      On QEMU this is the fourth serial port, on native boards the -b
-      option; either can be attached to a host controller such as an
+      On QEMU this is the fourth serial port (the second on
+      qemu_esp32c3), on native boards the -b option; either can be attached to a host controller such as an
       nRF52840 dongle running an H4 HCI firmware.
+
+config NIMBLE_HCI_ESP32C3
+    bool "ESP32-C3/S3 controller over VHCI"
+    depends on ESP32C3_BT
+    help
+      Talk H4 HCI to the ESP32-C3's own controller, Espressif's library,
+      through its virtual HCI. The controller is used only once armed
+      with btc arm, from the next boot on, and while its bring-up has not
+      failed; until then the transport answers as the fake controller
+      does.
 
 config NIMBLE_HCI_FAKE
     bool "Fake controller"
@@ -73,9 +83,9 @@ config NIMBLE_ID_ADDR_CONTROLLER
     help
       Use the address the controller reports, or let NimBLE pick one.
 
-config NIMBLE_ID_ADDR_SF32LB52_EFUSE
-    bool "SF32LB52 eFUSE"
-    depends on SOC_SF32LB52 && NVMEM_SF32LB
+config NIMBLE_ID_ADDR_SF32LB_EFUSE
+    bool "SF32LB eFUSE"
+    depends on SOC_FAMILY_SF32LB && NVMEM_SF32LB
     select NIMBLE_ID_ADDR
     help
       Public address derived from the unique ID in the SoC's eFUSE.

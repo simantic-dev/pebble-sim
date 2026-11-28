@@ -40,7 +40,7 @@ function(pbl_arch_flags out)
   get_directory_property(flags COMPILE_OPTIONS)
   set(arch "")
   foreach(flag ${flags})
-    if(flag MATCHES "^(-mthumb|-mcpu=|-mfloat-abi=|-mfpu=|-march=)")
+    if(flag MATCHES "^(-mthumb|-mcpu=|-mfloat-abi=|-mfpu=|-march=|-mabi=|-mlongcalls|-mtext-section-literals)")
       list(APPEND arch ${flag})
     endif()
   endforeach()
@@ -65,6 +65,13 @@ function(pbl_build_picolibc out)
   pbl_picolibc_time_override(override)
   pbl_arch_flags(arch)
   list(APPEND arch -include ${override})
+  if(CONFIG_CPU_RISCV)
+    set(cpu_family riscv32)
+  elseif(CONFIG_CPU_XTENSA)
+    set(cpu_family xtensa)
+  else()
+    set(cpu_family arm)
+  endif()
   set(arch_literal "")
   foreach(flag ${arch})
     string(APPEND arch_literal "'${flag}', ")
@@ -80,8 +87,8 @@ nm = '${CROSS_COMPILE}nm'
 strip = '${CROSS_COMPILE}strip'
 [host_machine]
 system = 'none'
-cpu_family = 'arm'
-cpu = 'arm'
+cpu_family = '${cpu_family}'
+cpu = '${cpu_family}'
 endian = 'little'
 [properties]
 skip_sanity_check = true

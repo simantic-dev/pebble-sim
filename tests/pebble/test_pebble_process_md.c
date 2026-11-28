@@ -184,6 +184,32 @@ void test_pebble_process_md__framebuffer_of_flexible_app(void) {
   prv_assert_framebuffer_size(&md, s_display_size);
 }
 
+void test_pebble_process_md__resources_match(void) {
+  // The one pack the app was built with, by its CRC
+  PebbleProcessMdFlash md = prv_md_for_display(PBL_DISPLAY_WIDTH, PBL_DISPLAY_HEIGHT, OUR_SHAPE);
+  md.res_version = (ResourceVersion){.crc = 0x1234, .timestamp = 77};
+  cl_assert(process_metadata_resources_match(&md.common, &(ResourceVersion){.crc = 0x1234}));
+  cl_assert(!process_metadata_resources_match(&md.common,
+                                              &(ResourceVersion){.crc = 0x4321, .timestamp = 77}));
+
+  // Any pack of the app's set, by the set's ID
+  md.platform_info.flags = PROCESS_PLATFORM_INFO_FLAG_RESOURCE_SET;
+  cl_assert(process_metadata_resources_match(&md.common,
+                                             &(ResourceVersion){.crc = 0x4321, .timestamp = 77}));
+  cl_assert(!process_metadata_resources_match(&md.common,
+                                              &(ResourceVersion){.crc = 0x1234, .timestamp = 78}));
+  // A pack of no set has no ID
+  cl_assert(!process_metadata_resources_match(&md.common, &(ResourceVersion){.crc = 0x1234}));
+  md.res_version.timestamp = 0;
+  cl_assert(!process_metadata_resources_match(&md.common, &(ResourceVersion){.crc = 0x1234}));
+
+  // An app without a record goes by the CRC
+  md = prv_md_for_platform(PROCESS_INFO_PLATFORM_BASALT);
+  md.res_version = (ResourceVersion){.crc = 0x1234};
+  cl_assert(process_metadata_resources_match(&md.common, &(ResourceVersion){.crc = 0x1234}));
+  cl_assert(!process_metadata_resources_match(&md.common, &(ResourceVersion){.crc = 0x1235}));
+}
+
 void test_pebble_process_md__required_features(void) {
   const uint32_t watch = PLATFORM_FEATURE_MICROPHONE | PLATFORM_FEATURE_HEALTH;
 
@@ -232,4 +258,23 @@ void test_pebble_process_md__framebuffer_of_app_without_platform_info(void) {
   // A platform without a value and without a record is taken to be ours
   md = prv_md_for_platform(PROCESS_INFO_PLATFORM_OTHER);
   prv_assert_framebuffer_size(&md, s_display_size);
+}
+
+void test_pebble_process_md__abi(void) {
+  // A binary without a record predates riscv32: it is ARM code
+  PebbleProcessMdFlash md = prv_md_for_platform(PROCESS_INFO_PLATFORM_FLINT);
+  cl_assert_equal_i(process_metadata_get_abi(&md.common), PLATFORM_ABI_ARMV7M);
+  cl_assert(process_metadata_runs_natively(&md.common));
+  cl_assert(process_metadata_abi_supported(&md.common));
+
+  md = prv_md_for_display(PBL_DISPLAY_WIDTH, PBL_DISPLAY_HEIGHT, OUR_SHAPE);
+  md.platform_info.abi = PLATFORM_ABI_RISCV32;
+  cl_assert_equal_i(process_metadata_get_abi(&md.common), PLATFORM_ABI_RISCV32);
+  // The unit tests are of an ARM watch, which runs no RISC-V code
+  cl_assert(!process_metadata_runs_natively(&md.common));
+  cl_assert(!process_metadata_abi_supported(&md.common));
+
+  // The firmware's own processes are of its CPU
+  const PebbleProcessMdFlash system = {};
+  cl_assert(process_metadata_runs_natively(&system.common));
 }

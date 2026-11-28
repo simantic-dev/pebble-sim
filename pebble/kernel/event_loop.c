@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include <services/compositor/epd_bench.h>
 #include "event_loop.h"
 
 #include "events.h"
@@ -17,12 +18,15 @@
 #include <pbl/kernel/time.h>
 #include <pbl/kernel/work.h>
 #include <pbl/mcu/fpu.h>
-#include <pbl/pp/transports/qemu.h>
 #include <pbl/services/battery/battery_charger.h>
 #include <pbl/services/battery/battery_monitor.h>
 #include <pbl/services/battery/battery_state.h>
+#include <pbl/services/bluetooth/gateway.h>
 #include <pbl/services/clock.h>
 #include <pbl/services/compositor/compositor.h>
+#ifdef CONFIG_DISPLAY_UC8279_LOCAL_TEXT
+#include <pbl/services/compositor/compositor_display.h>
+#endif
 #include <pbl/services/debounced_connection_service.h>
 #include <pbl/services/ecompass.h>
 #include <pbl/services/event_service.h>
@@ -37,7 +41,7 @@
 #include <applib/app_launch_reason.h>
 #include <applib/graphics/graphics.h>
 #include <applib/ui/ui.h>
-#include <comm/ble/kernel_le_client/kernel_le_client.h>
+#include <comm/qemu/pp_transport.h>
 #include <kernel/input_buttons.h>
 #include <kernel/kernel_applib_state.h>
 #include <kernel/low_power.h>
@@ -177,6 +181,12 @@ static void launcher_handle_button_event(PebbleEvent *e) {
   ButtonId button_id = e->button.button_id;
   const bool watchface_running = app_manager_is_watchface_running();
 
+#ifdef CONFIG_DISPLAY_UC8279_LOCAL_TEXT
+  if (!watchface_running) {
+    compositor_display_note_input();
+  }
+#endif
+
   // trigger the backlight on any button down event
   if (e->type == PEBBLE_BUTTON_DOWN_EVENT) {
     PBL_ANALYTICS_ADD(button_pressed_count, 1);
@@ -273,6 +283,9 @@ static PBL_NOINLINE void prv_minimal_event_handler(PebbleEvent *e) {
       return;
 
     case PEBBLE_RENDER_READY_EVENT:
+      if (!e->render.reuse_frame) {
+        epd_appbench_ready(e->render.ticks, e->render.sequence);
+      }
       compositor_app_render_ready();
       return;
 
@@ -532,8 +545,7 @@ static PBL_NOINLINE void prv_extended_event_handler(PebbleEvent *e) {
       return;
     }
     case PEBBLE_BLE_CONNECTION_EVENT:
-    case PEBBLE_BLE_GATT_CLIENT_EVENT:
-      kernel_le_client_handle_event(e);
+      bt_gateway_handle_event(e);
       return;
 
     case PEBBLE_COMM_SESSION_EVENT: {
@@ -647,8 +659,8 @@ static PBL_NOINLINE void prv_launcher_main_loop_init(void) {
   }
 #endif
 
-#ifdef CONFIG_PP_TRANSPORT_QEMU
-  pbl_pp_qemu_notify_ready();
+#ifdef CONFIG_QEMU_SERIAL
+  qemu_pp_notify_ready();
 #endif
 #ifdef CONFIG_CONSOLE
   pbl_console_enable_prompt();

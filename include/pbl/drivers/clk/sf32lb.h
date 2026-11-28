@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include <pbl/drivers/clk.h>
+#include <pbl/drivers/power_domain.h>
 
 /**
  * @defgroup drivers_clk_sf32lb SF32LB RCC clocks
@@ -208,6 +209,19 @@ void pbl_clk_sf32lb_hxt48_suspend(struct pbl_clk_sf32lb_hxt48_state *state);
  */
 void pbl_clk_sf32lb_hxt48_resume(const struct pbl_clk_sf32lb_hxt48_state *state);
 
+/**
+ * @brief Keep clk_hpsys and the DLLs running in deep WFI, for blocks clocked from them.
+ *
+ * Deep WFI otherwise moves clk_hpsys to HRC48 and stops the DLL outputs. The bus clock is still
+ * divided down. Counted: balance each call with pbl_clk_sf32lb_deepwfi_release().
+ *
+ * @return 0, or -ENOTSUP where deep WFI cannot keep the DLLs running.
+ */
+int pbl_clk_sf32lb_deepwfi_hold(void);
+
+/** @brief Release a hold taken with pbl_clk_sf32lb_deepwfi_hold(). */
+void pbl_clk_sf32lb_deepwfi_release(void);
+
 /** @cond INTERNAL_HIDDEN */
 extern const struct pbl_clk_controller pbl_clk_sf32lb52_pmuc;
 /** @endcond */
@@ -354,6 +368,80 @@ extern const struct pbl_clk_controller_ops pbl_clk_sf32lb52_rtc_ops;
   PBL_DEVICE_INSTANCE(sym, struct pbl_clk_sf32lb52_rtc, struct pbl_clk_controller, ctrl) {    \
     .ctrl = PBL_CLK_CONTROLLER_INIT(sym, _name, nullptr, nullptr, &pbl_clk_sf32lb52_rtc_ops), \
     .base = (_base), .lrc10 = _lrc10, .lxt32 = _lxt32,                                        \
+  }
+
+/** @cond INTERNAL_HIDDEN */
+struct pbl_clk_sf32lb_soc;
+
+struct pbl_clk_sf32lb {
+  struct pbl_clk_controller ctrl;
+  const struct pbl_clk_sf32lb_soc *soc;
+  uintptr_t base;
+  uintptr_t cfg;
+  struct pbl_clk hrc48;
+  struct pbl_clk hxt48;
+  struct pbl_clk hxt48_dll;
+  struct pbl_power_domain pd;
+  uint32_t pd_level;
+  const struct pbl_clk_assigned *assigned;
+};
+
+extern const struct pbl_clk_controller_ops pbl_clk_sf32lb_ops;
+int pbl_clk_sf32lb_init(const struct pbl_device *dev);
+extern const struct pbl_clk_sf32lb_soc pbl_clk_sf32lb52_soc;
+extern const struct pbl_clk_sf32lb_soc pbl_clk_sf32lb57_soc;
+/** @endcond */
+
+/**
+ * @brief Define the SF32LB52 HPSYS RCC clock controller.
+ *
+ * @param sym Symbol of the controller.
+ * @param _name Name.
+ * @param _base RCC registers.
+ * @param _cfg HPSYS_CFG registers.
+ * @param _hrc48 HRC48 oscillator, from PBL_CLK().
+ * @param _hxt48 HXT48 crystal, from PBL_CLK().
+ * @param _hxt48_dll HXT48 doubler, from PBL_CLK().
+ * @param _pd HPSYS power domain, from PBL_POWER_DOMAIN().
+ * @param _pd_level Level of the power domain the clock tree needs, from required-opps.
+ * @param ... Assigned clocks, from PBL_CLK_ASSIGNED().
+ */
+#define PBL_CLK_SF32LB52_DEFINE(sym, _name, _base, _cfg, _hrc48, _hxt48, _hxt48_dll, _pd,       \
+                                _pd_level, ...)                                                 \
+  PBL_CLK_CONTROLLER_STATE_DEFINE(sym, SF32LB_HPSYS_NUM_CLKS);                                  \
+  PBL_CLK_ASSIGNED_DEFINE(sym##_assigned, __VA_ARGS__);                                         \
+  PBL_DEVICE_INSTANCE(sym, struct pbl_clk_sf32lb, struct pbl_clk_controller, ctrl) {            \
+    .ctrl =                                                                                     \
+        PBL_CLK_CONTROLLER_INIT(sym, _name, pbl_clk_sf32lb_init, nullptr, &pbl_clk_sf32lb_ops), \
+    .soc = &pbl_clk_sf32lb52_soc, .base = (_base), .cfg = (_cfg), .hrc48 = _hrc48,              \
+    .hxt48 = _hxt48, .hxt48_dll = _hxt48_dll, .pd = _pd, .pd_level = (_pd_level),               \
+    .assigned = sym##_assigned,                                                                 \
+  }
+
+/**
+ * @brief Define the SF32LB57 HPSYS RCC clock controller.
+ *
+ * @param sym Symbol of the controller.
+ * @param _name Name.
+ * @param _base RCC registers.
+ * @param _cfg HPSYS_CFG registers.
+ * @param _hrc48 HRC48 oscillator, from PBL_CLK().
+ * @param _hxt48 HXT48 crystal, from PBL_CLK().
+ * @param _hxt48_dll HXT48 doubler, from PBL_CLK().
+ * @param _pd HPSYS power domain, from PBL_POWER_DOMAIN().
+ * @param _pd_level Level of the power domain the clock tree needs, from required-opps.
+ * @param ... Assigned clocks, from PBL_CLK_ASSIGNED().
+ */
+#define PBL_CLK_SF32LB57_DEFINE(sym, _name, _base, _cfg, _hrc48, _hxt48, _hxt48_dll, _pd,       \
+                                _pd_level, ...)                                                 \
+  PBL_CLK_CONTROLLER_STATE_DEFINE(sym, SF32LB_HPSYS_NUM_CLKS);                                  \
+  PBL_CLK_ASSIGNED_DEFINE(sym##_assigned, __VA_ARGS__);                                         \
+  PBL_DEVICE_INSTANCE(sym, struct pbl_clk_sf32lb, struct pbl_clk_controller, ctrl) {            \
+    .ctrl =                                                                                     \
+        PBL_CLK_CONTROLLER_INIT(sym, _name, pbl_clk_sf32lb_init, nullptr, &pbl_clk_sf32lb_ops), \
+    .soc = &pbl_clk_sf32lb57_soc, .base = (_base), .cfg = (_cfg), .hrc48 = _hrc48,              \
+    .hxt48 = _hxt48, .hxt48_dll = _hxt48_dll, .pd = _pd, .pd_level = (_pd_level),               \
+    .assigned = sym##_assigned,                                                                 \
   }
 
 /** @} */

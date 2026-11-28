@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+console_uart: usb_serial_jtag
+display: display
+charger: board_charger
+backlight: frontlight
+rtc: board_rtc
+touch: touchscreen
+flash: flash0

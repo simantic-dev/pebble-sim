@@ -3,6 +3,7 @@
 
 #include "graphics_private_raw.h"
 
+#include "framebuffer.h"
 #include "graphics.h"
 #include "graphics_private.h"
 #include "graphics_row_ops.h"
@@ -35,37 +36,74 @@ static PBL_ALWAYS_INLINE void prv_set_color(const GContext *ctx, GColor *dst_col
 }
 
 #if !PBL_COLOR
+static void prv_fill_row_1bit(GBitmap *framebuffer, int16_t y, int16_t x, int32_t width,
+                              uint32_t pattern);
+static void prv_fill_rows_1bit(uint32_t *row, int rows, int words_per_row, int16_t x, int32_t width,
+                               uint32_t pattern);
+
 // Plots row at given starting position and width, dithers grayscale colors
 static void prv_assign_row_with_pattern_1bit(GBitmap *framebuffer, int16_t y, int16_t x,
                                              int32_t width, GColor color) {
   const uint32_t pattern = graphics_private_get_1bit_grayscale_pattern(color, (uint8_t)y);
-  uint32_t left_edge_block, right_edge_block, mask;
-  const uint32_t left_edge_bits_count = x % 32;
-  const uint32_t right_edge_bits_count = (x + width) % 32;
-  uint32_t *block =
-      ((uint32_t *)framebuffer->addr) + (y * (framebuffer->row_size_bytes / 4)) + (x / 32);
+  if (gbitmap_is_scaled2(framebuffer)) {
+    // The row as 2x2 blocks: each pattern bit twice, on two rows
+    const int words_per_row = framebuffer->row_size_bytes / 4;
+    prv_fill_rows_1bit((uint32_t *)framebuffer->addr + 2 * y * words_per_row, 2, words_per_row,
+                       2 * x, 2 * width, graphics_private_double_bits16((uint16_t)pattern));
+    return;
+  }
+  prv_fill_row_1bit(framebuffer, y, x, width, pattern);
+}
 
-  bool both_edges_in_same_block = (left_edge_bits_count + width) < 32;
-  if (both_edges_in_same_block) {
-    left_edge_block = (0xffffffff << left_edge_bits_count);
-    right_edge_block = right_edge_bits_count ? (0xffffffff >> (32 - right_edge_bits_count)) : 0;
-    mask = (left_edge_block & right_edge_block);
-    *(block) = (*(block) & ~mask) | (pattern & mask);
-  } else {
-    if (left_edge_bits_count) {
-      mask = 0xffffffff << left_edge_bits_count;
-      *(block) = (*(block) & ~mask) | (pattern & mask);
-      block++;
-      width -= (32 - left_edge_bits_count);
+static void prv_fill_row_1bit(GBitmap *framebuffer, int16_t y, int16_t x, int32_t width,
+                              uint32_t pattern) {
+  prv_fill_rows_1bit((uint32_t *)framebuffer->addr + y * (framebuffer->row_size_bytes / 4), 1, 0, x,
+                     width, pattern);
+}
+
+#ifdef CONFIG_FRAMEBUFFER_SCALE2
+void graphics_private_fill_rect_scaled2(GBitmap *framebuffer, GRect rect, GColor color) {
+  const int words_per_row = framebuffer->row_size_bytes / 4;
+  // The dither of even and odd rows, each bit doubled
+  const uint32_t patterns[2] = {
+    graphics_private_double_bits16((uint16_t)graphics_private_get_1bit_grayscale_pattern(color, 0)),
+    graphics_private_double_bits16((uint16_t)graphics_private_get_1bit_grayscale_pattern(color, 1)),
+  };
+  uint32_t *row = (uint32_t *)framebuffer->addr + 2 * rect.origin.y * words_per_row;
+  if (patterns[0] == patterns[1]) {
+    prv_fill_rows_1bit(row, 2 * rect.size.h, words_per_row, 2 * rect.origin.x, 2 * rect.size.w,
+                       patterns[0]);
+    return;
+  }
+  for (int y = rect.origin.y; y < grect_get_max_y(&rect); y++, row += 2 * words_per_row) {
+    prv_fill_rows_1bit(row, 2, words_per_row, 2 * rect.origin.x, 2 * rect.size.w, patterns[y % 2]);
+  }
+}
+#endif
+
+// Fills [x, x + width) of @p rows rows, @p words_per_row apart, from @p row
+static SCALE2_HOT void prv_fill_rows_1bit(uint32_t *row, int rows, int words_per_row, int16_t x,
+                                          int32_t width, uint32_t pattern) {
+  if (width <= 0) {
+    return;
+  }
+  const int first = x / 32;
+  const int last = (x + width - 1) / 32;
+  uint32_t left_mask = 0xffffffff << (x % 32);
+  const uint32_t right_bits = (x + width) % 32;
+  const uint32_t right_mask = right_bits ? (0xffffffff >> (32 - right_bits)) : 0xffffffff;
+  if (first == last) {
+    left_mask &= right_mask;
+  }
+  for (; rows > 0; rows--, row += words_per_row) {
+    row[first] = (row[first] & ~left_mask) | (pattern & left_mask);
+    if (first == last) {
+      continue;
     }
-    if (right_edge_bits_count) {
-      mask = 0xffffffff >> (32 - right_edge_bits_count);
-      *(block + (width / 32)) = (*(block + (width / 32)) & ~mask) | (pattern & mask);
-      width -= right_edge_bits_count;
+    for (int i = first + 1; i < last; i++) {
+      row[i] = pattern;
     }
-    if (width > 0) {
-      memset(block, pattern, (width / 8));
-    }
+    row[last] = (row[last] & ~right_mask) | (pattern & right_mask);
   }
 }
 #endif // !PBL_COLOR
@@ -209,9 +247,12 @@ PBL_T_STATIC void prv_blend_vertical_line_raw(GContext *ctx, int16_t x, int16_t 
 #else
   bool black = (gcolor_equal(color, GColorBlack));
 
-  for (int i = y1; i < y2; i++) {
-    uint8_t *line = ((uint8_t *)framebuffer->addr) + (framebuffer->row_size_bytes * i);
-    pbl_bitset8_update(line, x, !black);
+  // One byte per row down the column: two bits and both rows of each pixel at twice the size
+  const int s = gbitmap_is_scaled2(framebuffer) ? 2 : 1;
+  const uint8_t mask = (uint8_t)(((1U << s) - 1U) << ((s * x) % 8));
+  uint8_t *byte = (uint8_t *)framebuffer->addr + s * y1 * framebuffer->row_size_bytes + s * x / 8;
+  for (int i = s * y1; i < s * y2; i++, byte += framebuffer->row_size_bytes) {
+    *byte = black ? (*byte & ~mask) : (*byte | mask);
   }
 #endif // CONFIG_SCREEN_COLOR_DEPTH_BITS == 8
 }

@@ -51,7 +51,10 @@ def platform_info_initializer(desc, app_memory=None):
         # What an app of the platform is given, rounded up
         str(-(-app_memory // 1024)),
         str(color_depth),
-        "PROCESS_PLATFORM_INFO_FLAG_FLEXIBLE" if flexible else "0",
+        # It works with whichever of its resource packs it is installed with.
+        "PROCESS_PLATFORM_INFO_FLAG_FLEXIBLE | PROCESS_PLATFORM_INFO_FLAG_RESOURCE_SET"
+        if flexible
+        else "0",
     )
     return f"{{ {', '.join(fields)} }}"
 
@@ -64,9 +67,17 @@ def _platform_info(platform_name, app_info):
     platform = pebble_platforms[platform_name]
     if "FROZEN_AT_REVISION" in platform:
         return None
-    return platform_info_initializer(
-        platform["DESCRIPTOR"], app_info.get("appMemory")
-    )
+    desc = platform["DESCRIPTOR"]
+    # A project whose layout is still that of the classic display says so for
+    # the platform; its binary says it is for that display, which the firmware
+    # then frames.
+    if platform_name in app_info.get("classicLayout", []):
+        desc = dict(desc, display=dict(desc["display"], **CLASSIC_DISPLAY))
+    return platform_info_initializer(desc, app_info.get("appMemory"))
+
+
+# The display of the classic watches, which "classicLayout" lays a project out for.
+CLASSIC_DISPLAY = {"width": 144, "height": 168}
 
 
 def generate_appinfo_c(app_info, output_filename, platform_name=None):

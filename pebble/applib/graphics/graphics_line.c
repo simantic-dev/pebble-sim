@@ -357,6 +357,15 @@ static bool prv_calc_far_points(GPointPrecise *p0, GPointPrecise *p1, Fixed_S16_
 
 void prv_draw_stroked_line_precise(GContext *ctx, GPointPrecise p0, GPointPrecise p1,
                                    uint8_t width) {
+#ifdef CONFIG_FRAMEBUFFER_SCALE2_SHAPES
+  GScaled2Scope saved;
+  if (width <= UINT8_MAX / 2 && graphics_private_scaled2_begin(ctx, &saved)) {
+    prv_draw_stroked_line_precise(ctx, graphics_private_scaled2_precise(p0),
+                                  graphics_private_scaled2_precise(p1), 2 * width);
+    graphics_private_scaled2_end(ctx, &saved);
+    return;
+  }
+#endif
   // This function will draw thick line on the screen using following technique:
   // - calculate offset points of the line
   // - calculate margin for the round caps at the end of the line
@@ -743,6 +752,24 @@ void graphics_draw_line(GContext *ctx, GPoint p0, GPoint p1) {
   if (ctx->lock) {
     return;
   }
+#ifdef CONFIG_FRAMEBUFFER_SCALE2_SHAPES
+  // A slanted 1-pixel line at twice the size, 2 pixels wide; wider lines get there through the
+  // stroked line, 1-pixel horizontal and vertical ones are exact as 2x2 blocks
+  GScaled2Scope saved;
+  if (p0.x != p1.x && p0.y != p1.y && ctx->draw_state.stroke_width <= 1 &&
+      graphics_private_scaled2_begin(ctx, &saved)) {
+    // Two 1-pixel lines offset orthogonally to the dominant axis: two native pixels wide, and a
+    // fraction of the stroked line's cost
+    const GPoint a = GPoint(2 * p0.x, 2 * p0.y);
+    const GPoint b = GPoint(2 * p1.x, 2 * p1.y);
+    const GPoint step =
+        (PBL_ABS(p1.y - p0.y) >= PBL_ABS(p1.x - p0.x)) ? GPoint(1, 0) : GPoint(0, 1);
+    graphics_line_draw_1px_non_aa(ctx, a, b);
+    graphics_line_draw_1px_non_aa(ctx, gpoint_add(a, step), gpoint_add(b, step));
+    graphics_private_scaled2_end(ctx, &saved);
+    return;
+  }
+#endif
 
 #if PBL_COLOR
   if (ctx->draw_state.antialiased) {

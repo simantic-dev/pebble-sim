@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import pickle
+import re
 
 import wafshim
 from wafshim import REPO_ROOT, Bld, Env, Node, Task
@@ -94,7 +95,31 @@ def _load_config(path):
         }
 
 
-def get_resources_dict(bld, variant, config=frozenset()):
+def _load_config_strings(path):
+    """The string values of the build's Kconfig symbols."""
+    strings = {}
+    if path:
+        with open(path) as f:
+            for raw in f:
+                name, sep, value = raw.strip().partition("=")
+                if sep and value.startswith('"') and value.endswith('"'):
+                    strings[name] = value[1:-1]
+    return strings
+
+
+def _expand_file(item, strings):
+    """A file named as ${CONFIG_SYMBOL}/name is taken from the directory that symbol gives,
+    e.g. fonts that cannot be in the tree."""
+    match = re.match(r"\$\{(CONFIG_\w+)\}/(.+)", item["file"])
+    if not match:
+        return
+    directory = strings.get(match.group(1))
+    if not directory:
+        raise ValueError(f"{item['name']}: {match.group(1)} names no directory")
+    item["file"] = os.path.join(os.path.expanduser(directory), match.group(2))
+
+
+def get_resources_dict(bld, variant, config=frozenset(), strings=None):
     """Merge common/base with the variant and platform overrides."""
     resource_nodes = []
     override_dicts = []
@@ -125,26 +150,32 @@ def get_resources_dict(bld, variant, config=frozenset()):
                 return
         resources_dict["media"].append(item_dict)
 
+    def enabled(item):
+        return "config" not in item or item["config"] in config
+
+    # A disabled item must not override an enabled one of the same name
     for override in override_dicts:
         for item in override["media"]:
-            update_common_media_item(item)
+            if enabled(item):
+                update_common_media_item(item)
 
     resources_dict["media"] = [
-        item for item in resources_dict["media"]
-        if "config" not in item or item["config"] in config
+        item for item in resources_dict["media"] if enabled(item)
     ]
+    for item in resources_dict["media"]:
+        if "file" in item:
+            _expand_file(item, strings or {})
 
     # "files" and "timeline" cannot exist in the common resource map.
     for key in ("files", "timeline"):
         if key in specific_dict:
             resources_dict[key] = specific_dict[key]
 
-    # The font scripts want an absolute characterList path.
+    # The font scripts want absolute characterList and fallback paths.
     for item in resources_dict["media"]:
-        if "characterList" in item:
-            item["characterList"] = os.path.abspath(
-                os.path.join("resources", item["characterList"])
-            )
+        for key in ("characterList", "fallback"):
+            if key in item:
+                item[key] = os.path.abspath(os.path.join("resources", item[key]))
 
     if is_recovery:
         # PRF needs every media item built into the firmware image.
@@ -159,6 +190,9 @@ def get_resources_dict(bld, variant, config=frozenset()):
 def definition_deps(definition):
     """Everything a resource is built from."""
     deps = [os.path.join(RESOURCES_DIR, s) for s in definition.sources]
+    fallback = getattr(definition, "fallback", None)
+    if fallback:
+        deps.append(fallback)
     character_list = getattr(definition, "character_list", None)
     # Some resource maps name a codepoint list that does not exist; the font
     # generator only reads one for the formats that need it.
@@ -171,14 +205,18 @@ def reso_output(definition, builddir):
     """Where a resource's .reso lands: next to the source it is built
     from, under the build directory."""
     source = Node(os.path.join(RESOURCES_DIR, definition.sources[0]))
-    return os.path.join(builddir, f"{source.relpath()}.{definition.name}.reso")
+    relpath = source.relpath()
+    if relpath.startswith(".."):
+        # A source outside the tree (a local font): its output stays in the build directory
+        relpath = os.path.join("local", os.path.basename(relpath))
+    return os.path.join(builddir, f"{relpath}.{definition.name}.reso")
 
 
 def cmd_manifest(args):
     load_generators()
     bld = make_bld(args)
     resource_nodes, resources_dict = get_resources_dict(
-        bld, args.variant, _load_config(args.config)
+        bld, args.variant, _load_config(args.config), _load_config_strings(args.config)
     )
 
     definitions = []

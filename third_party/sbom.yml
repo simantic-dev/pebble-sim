@@ -44,6 +44,40 @@ components:
     license: GPL-2.0-only
     url: https://git.kernel.org/pub/scm/linux/kernel/git/devicetree/devicetree-rebasing.git
 
+  - name: esp32c3-bt-lib
+    path: espressif_bt/esp32c3-bt-lib
+    supplier: Espressif Systems (Shanghai) Co., Ltd.
+    description: ESP32-C3 Bluetooth LE controller library, the one of ESP-IDF 5.5.5
+    commit: 0a08c4b32f3666003080b662a1a61794da24ff0f
+    license: Apache-2.0
+    url: https://github.com/espressif/esp32c3-bt-lib
+
+  - name: esp-phy-lib
+    path: espressif_bt/esp-phy-lib
+    supplier: Espressif Systems (Shanghai) Co., Ltd.
+    description: Espressif PHY and baseband libraries, the ones of ESP-IDF 5.5.5
+    commit: e37ecdc9c1e93fefda5b1a99f09bd979046d0720
+    license: Apache-2.0
+    url: https://github.com/espressif/esp-phy-lib
+
+  - name: esp-idf-bt-glue
+    paths:
+      - espressif_bt/esp32c3/bt.c
+      - espressif_bt/esp32c3/esp32c3_regs.h
+      - espressif_bt/esp32c3/esp_bt.h
+      - espressif_bt/esp32c3/phy.c
+      - espressif_bt/esp32c3/phy.h
+      - espressif_bt/esp32c3/phy_init_data.c
+      - espressif_bt/esp32c3/phy_init_data.h
+      - espressif_bt/esp32c3/rom.ld
+      - espressif_bt/esp32c3/rom_patch.ld
+    supplier: Espressif Systems (Shanghai) Co., Ltd.
+    description: Controller and PHY bring-up and ROM symbols derived from ESP-IDF
+    version: 5.5.5
+    license: Apache-2.0
+    purl: pkg:github/espressif/esp-idf@v{version}
+    url: https://github.com/espressif/esp-idf
+
   - name: fff
     path: fff/fff
     supplier: Michael Long

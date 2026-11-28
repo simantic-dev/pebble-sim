@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+# The firmware runs xteinkx4 on it, with the Flint resources
+config RESOURCES_BOARD
+    default "qemu_flint"
+
+# The radio, once CONFIG_ESP32C3_BT links Espressif's controller in
+choice NIMBLE_HCI
+    default NIMBLE_HCI_ESP32C3 if ESP32C3_BT
+endchoice
+
+config DISPLAY_SSD1677_MOTION_FRAMES
+    default 2

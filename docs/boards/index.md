@@ -1,20 +1,60 @@
 # Boards
 
-| Board | Revisions | Variants | Device | Platform |
-| --- | --- | --- | --- | --- |
-| [`asterix`](asterix/index.md) | | | Pebble 2 Duo | Flint |
-| [`obelix`](obelix/index.md) | `bb2`, `dvt`, `pvt` | | Pebble Time 2 | Emery |
-| [`getafix`](getafix/index.md) | `dvt`, `dvt2` | | Pebble Round 2 | Gabbro |
-| [`sf32lb57_dpi_hdk`](sf32lb57_dpi_hdk/index.md) | | | SiFli SF32LB57x-DPI-HDK | |
-| `qemu_flint` | | | Emulated Pebble 2 Duo | Flint |
-| `qemu_emery` | | | Emulated Pebble Time 2 | Emery |
-| `qemu_gabbro` | | | Emulated Pebble Round 2 | Gabbro |
-| `native_flint` | | `wasm` | Host program | Flint |
-| `native_emery` | | `wasm` | Host program | Emery |
-| `native_gabbro` | | `wasm` | Host program | Gabbro |
+`````{list-table}
+:header-rows: 1
+:class: board-list
+
+* - Board
+  - Description
+  - Picture
+* - [`asterix`](asterix/index.md)
+  - Pebble 2 Duo
+  - ```{thumbnail} asterix/images/asterix.webp
+    ```
+* - [`obelix`](obelix/index.md)
+  - Pebble Time 2
+  - ```{thumbnail} obelix/images/obelix.webp
+    ```
+* - [`getafix`](getafix/index.md)
+  - Pebble Round 2
+  - ```{thumbnail} getafix/images/getafix.webp
+    ```
+* - [`sf32lb57_dpi_hdk`](sf32lb57_dpi_hdk/index.md)
+  - SiFli SF32LB57x-DPI-HDK development kit
+  - ```{thumbnail} sf32lb57_dpi_hdk/images/sf32lb57_dpi_hdk.webp
+    ```
+* - [`stm32h747i_disco`](stm32h747i_disco/index.md)
+  - STMicroelectronics STM32H747I-DISCO discovery kit
+  - ```{thumbnail} stm32h747i_disco/images/stm32h747i_disco.webp
+    ```
+* - [`xteink_x4`](xteink_x4/index.md)
+  - Xteink X4 e-reader
+  -
+* - `qemu_flint`
+  - Flint platform emulator (e.g. Pebble 2 Duo)
+  -
+* - `qemu_emery`
+  - Emery platform emulator (e.g. Pebble Time 2)
+  -
+* - `qemu_gabbro`
+  - Gabbro platform emulator (e.g. Pebble Round 2)
+  -
+* - [`qemu_esp32c3`](qemu_esp32c3/index.md)
+  - Espressif ESP32-C3 emulator
+  -
+* - `native_flint`
+  - Flint platform host/wasm simulator (e.g. Pebble 2 Duo)
+  -
+* - `native_emery`
+  - Emery platform host/wasm simulator (e.g. Pebble Time 2)
+  -
+* - `native_gabbro`
+  - Gabbro platform host/wasm simulator (e.g. Pebble Round 2)
+  -
+`````
 
 Hardware plugged into a connector of a board, such as a display module, is
-an add-on; see {doc}`addons/index`.
+an add-on; see {doc}`../addons/index`.
 
 ```{toctree}
 :hidden:
@@ -23,5 +63,7 @@ asterix/index.md
 obelix/index.md
 getafix/index.md
 sf32lb57_dpi_hdk/index.md
-addons/index.md
+stm32h747i_disco/index.md
+qemu_esp32c3/index.md
+xteink_x4/index.md
 ```

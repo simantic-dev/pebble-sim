@@ -39,6 +39,12 @@ class FontResourceGenerator(ResourceGenerator):
         definition.extended = bool(definition_dict.get("extended"))
         definition.tracking_adjust = definition_dict.get("trackingAdjust")
         definition.pixel_height = definition_dict.get("pixelHeight")
+        definition.render_height = definition_dict.get("renderHeight")
+        definition.scale = definition_dict.get("scale", 1)
+        definition.autohint = bool(definition_dict.get("autohint"))
+        definition.bits = definition_dict.get("bits", 1)
+        definition.fallback = definition_dict.get("fallback")
+        definition.edges = bool(definition_dict.get("edges"))
         return definition
 
     @staticmethod
@@ -88,10 +94,15 @@ class FontResourceGenerator(ResourceGenerator):
         # 2.4 (and possibly later versions). To avoid running into this, we use a lock.
         with cls.lock:
             pixel_height = cls._get_pixel_height(definition)
+            # Draws the glyphs at this size but keeps the name's height and baseline, so the
+            # font can stand in for another of that name height
+            render_height = cls._get_pixel_height(
+                definition, "render_height", "renderHeight"
+            )
 
             # Extended fonts take their baseline from the name even when pixelHeight is set
             name_height = None
-            if pixel_height is None or definition.extended:
+            if pixel_height is None or definition.extended or render_height is not None:
                 name_height = cls._get_font_height_from_name(definition.name)
                 if not 1 <= name_height <= MAX_FONT_HEIGHT:
                     raise ValueError(
@@ -101,21 +112,53 @@ class FontResourceGenerator(ResourceGenerator):
                 cls._warn_if_height_moved(definition.name, name_height)
 
             height = name_height if pixel_height is None else pixel_height
+            if render_height is not None:
+                height = render_height
 
             is_legacy = definition.compatibility == "2.7"
             max_glyphs = MAX_GLYPHS_EXTENDED if definition.extended else MAX_GLYPHS
 
             # Extended fonts sit on the base font's baseline, not their render size.
-            baseline = name_height if definition.extended else None
+            baseline = name_height if definition.extended or render_height else None
+
+            # A font for displays scaled by two keeps its glyphs at panel resolution
+            scale = getattr(definition, "scale", 1) or 1
+            if scale not in (1, 2) or (scale == 2 and render_height is None):
+                raise ValueError(f"Font {definition.name}: scale 2 needs renderHeight")
 
             font = Font(
                 ttf_path,
-                height,
+                height * scale,
                 max_glyphs,
                 definition.max_glyph_size,
                 is_legacy,
-                baseline=baseline,
+                baseline=baseline * scale if baseline else None,
+                line_height=name_height if render_height else None,
             )
+            if scale == 2:
+                font.set_scale2()
+            if getattr(definition, "autohint", False):
+                font.set_autohint()
+            bits = getattr(definition, "bits", 1) or 1
+            edges = getattr(definition, "edges", False)
+            if (
+                bits not in (1, 2, 4)
+                or (bits > 1 and is_legacy)
+                or (bits == 4 and not edges)
+            ):
+                raise ValueError(
+                    f"Font {definition.name}: invalid coverage depth or legacy font format"
+                )
+            if bits == 2:
+                font.set_bits2()
+            if getattr(definition, "fallback", None):
+                font.set_fallback(definition.fallback)
+            if edges:
+                if scale != 2 or bits not in (2, 4):
+                    raise ValueError(
+                        f"Font {definition.name}: edges need scale 2 and 2 or 4 bits"
+                    )
+                font.set_edges(bits)
 
             if definition.character_regex is not None:
                 font.set_regex_filter(definition.character_regex)
@@ -133,13 +176,13 @@ class FontResourceGenerator(ResourceGenerator):
             return font.bitstring()
 
     @staticmethod
-    def _get_pixel_height(definition):
+    def _get_pixel_height(definition, attribute="pixel_height", field="pixelHeight"):
         """
-        The pixelHeight set on the font, as a checked integer, or None when it
-        is not set.
+        The pixelHeight (or another height field) set on the font, as a checked
+        integer, or None when it is not set.
         """
 
-        pixel_height = getattr(definition, "pixel_height", None)
+        pixel_height = getattr(definition, attribute, None)
         if pixel_height is None:
             return None
 
@@ -150,12 +193,12 @@ class FontResourceGenerator(ResourceGenerator):
             pixel_height = int(pixel_height)
         except (TypeError, ValueError):
             raise ValueError(
-                f"Font {definition.name}: pixelHeight {pixel_height!r} is not a whole number"
+                f"Font {definition.name}: {field} {pixel_height!r} is not a whole number"
             ) from None
 
         if not 1 <= pixel_height <= MAX_FONT_HEIGHT:
             raise ValueError(
-                f"Font {definition.name}: pixelHeight {pixel_height} is outside 1 to "
+                f"Font {definition.name}: {field} {pixel_height} is outside 1 to "
                 f"{MAX_FONT_HEIGHT}"
             )
 

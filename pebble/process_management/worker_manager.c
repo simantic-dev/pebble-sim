@@ -117,6 +117,12 @@ static size_t prv_get_worker_segment_size(const PebbleProcessMd *app_md) {
 }
 
 static size_t prv_get_worker_stack_size(const PebbleProcessMd *app_md) {
+#ifdef CONFIG_APP_NATIVE_ALIASED
+  // As for apps: the firmware calls run on it, and the worker loads 4 KiB aligned after it
+  if ((app_md->process_storage == ProcessStorageFlash) && process_metadata_runs_natively(app_md)) {
+    return 4 * 1024;
+  }
+#endif
   return 1400;
 }
 
@@ -204,6 +210,18 @@ bool worker_manager_launch_new_worker_with_args(const PebbleProcessMd *app_md, c
     return false;
   }
 
+  // A runtime interpreting the worker runs, with the firmware it calls, on a stack of its own.
+  const size_t host_stack_size = process_runtime_host_stack_size(app_md);
+  void *host_stack = nullptr;
+  if (host_stack_size) {
+    host_stack = memory_segment_split(&worker_ram, nullptr, host_stack_size);
+    if (!host_stack) {
+      PBL_LOG_ERR("No room for the runtime's stack");
+      prv_abort_launch();
+      return false;
+    }
+  }
+
   // The rest of worker_ram is available for worker state to use as it sees fit.
   if (!worker_state_configure(&worker_ram)) {
     PBL_LOG_ERR("Worker state configuration failed");
@@ -234,8 +252,8 @@ bool worker_manager_launch_new_worker_with_args(const PebbleProcessMd *app_md, c
     .prio = CONFIG_WORKER_THREAD_PRIO,
     .privileged = true,
     .user_stack = prv_has_user_stack(app_md),
-    .stack = (char *)stack - stack_guard_size,
-    .stack_size = stack_size + stack_guard_size,
+    .stack = host_stack ?: (char *)stack - stack_guard_size,
+    .stack_size = host_stack ? host_stack_size : stack_size + stack_guard_size,
   };
 
   PBL_LOG_DBG("Starting %s", task_name);

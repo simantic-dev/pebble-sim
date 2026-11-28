@@ -44,6 +44,19 @@
  * @{
  */
 
+/**
+ * @brief Framebuffer pixels per pixel of the size a display's devicetree node describes, in each
+ * direction.
+ *
+ * With @c CONFIG_FRAMEBUFFER_SCALE2 the firmware draws at twice that size: a display node of
+ * width W, height H and scale S takes framebuffers of 2W by 2H and shows them at S / 2.
+ */
+#ifdef CONFIG_FRAMEBUFFER_SCALE2
+#define PBL_DISPLAY_FRAMEBUFFER_SCALE 2
+#else
+#define PBL_DISPLAY_FRAMEBUFFER_SCALE 1
+#endif
+
 /** @brief Pixel formats of the framebuffer. */
 enum pbl_display_format {
   /** 1 bit per pixel, leftmost pixel in the least significant bit, set for white. */
@@ -72,12 +85,54 @@ struct pbl_display_props {
   const uint8_t *round_mask;
 };
 
+/**
+ * @brief Panel-resolution detail of some pixels of a mono framebuffer shown at twice its size.
+ *
+ * A display that shows each framebuffer pixel as 2x2 panel pixels may draw a pixel's four panel
+ * pixels individually instead, each at one of four levels (0 white, 1 light grey, 2 dark grey, 3
+ * black): the pixel's detail. Text edges use it, for panel-resolution shapes and grey levels.
+ * Displays that cannot show it ignore it and show the framebuffer as is.
+ *
+ * Updates with grey false send a frame: a display without a grey pass of its own shows every
+ * panel pixel of level 2 or 3 black and the others white; one that adds grey in a later pass may
+ * use a threshold of its own for this black and white image (1, as the pass only lightens). An
+ * update with grey true comes once the screen has been idle after one with grey false, for the
+ * same frame: the display adds the levels of the detail to the rows it already shows, and leaves
+ * every other pixel alone.
+ *
+ * With a framebuffer at the panel's resolution (@ref PBL_DISPLAY_FRAMEBUFFER_SCALE 2, shown at
+ * scale 1) only grey updates use the detail, and row() takes a row @p y of the framebuffer and
+ * fills @p cells with 2 bits per pixel, four pixels a byte, the leftmost in the lowest bits: 1
+ * light grey, 2 dark grey, 0 none. Every pixel it gives a level is black in the frame shown, so
+ * the grey pass only lightens. It is called during the update, for its rows.
+ */
+struct pbl_display_detail {
+  /**
+   * Fill @p cells, one per pixel of row @p y, with that row's detail: 0 for a pixel shown as the
+   * framebuffer has it, else the levels of its panel pixels, two bits each: top left in bits 0-1,
+   * top right in 2-3, bottom left in 4-5, bottom right in 6-7, as the framebuffer is oriented.
+   * Returns false, leaving @p cells as they are, for a row without detail. Call it while the
+   * update runs, before pbl_display_complete().
+   */
+  bool (*row)(const struct pbl_display_detail *detail, uint16_t y, uint8_t *cells);
+  /** The update only adds the grey levels of the detail to rows the panel shows already. */
+  bool grey;
+};
+
 /** @brief Framebuffer handed to an update. */
 struct pbl_display_buffer {
   /** First row. */
   uint8_t *data;
   /** Bytes from one row to the next. */
   uint32_t pitch;
+  /** Detail of the rows, or NULL. */
+  const struct pbl_display_detail *detail;
+  /** Keep a live monochrome image visible during maintenance when the controller permits it. */
+  bool continuous;
+  /** Built-in interactive app or launcher, excluding watchfaces and diagnostic draws. */
+  bool system_ui;
+  /** A built-in menu drew a new cursor position in response to navigation input. */
+  bool menu_navigation;
 };
 
 /**

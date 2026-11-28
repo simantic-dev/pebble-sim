@@ -32,6 +32,10 @@ bool mcu_state_are_interrupts_enabled(void);
 
 #ifdef __arm__
 #include <pbl/mcu/interrupts_arm.inl.h>
+#elif defined(__riscv)
+#include <pbl/mcu/interrupts_riscv.inl.h>
+#elif defined(__XTENSA__)
+#include <pbl/mcu/interrupts_xtensa.inl.h>
 #else
 #include <pbl/mcu/interrupts_stubs.inl.h>
 #endif

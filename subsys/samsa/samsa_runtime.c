@@ -26,14 +26,14 @@ extern char __WORKER_RAM_end__[];
 // it is.
 #define GUEST_TABLE   UINT32_C(0x10000000)
 #define HANDLE_STRIDE UINT32_C(0x10000)
-#define MAX_HANDLES   4096
-#define MAX_OBJS      1024
+#define MAX_HANDLES   CONFIG_SAMSA_MAX_HANDLES
+#define MAX_OBJS      CONFIG_SAMSA_MAX_OBJS
 #define MAX_OPAQUE    256
 
-#define APP_SCRATCH_SIZE    (256 * 1024)
-#define APP_ARENA_SIZE      (256 * 1024)
-#define WORKER_SCRATCH_SIZE (32 * 1024)
-#define WORKER_ARENA_SIZE   (32 * 1024)
+#define APP_SCRATCH_SIZE    CONFIG_SAMSA_APP_SCRATCH_SIZE
+#define APP_ARENA_SIZE      CONFIG_SAMSA_APP_ARENA_SIZE
+#define WORKER_SCRATCH_SIZE CONFIG_SAMSA_WORKER_SCRATCH_SIZE
+#define WORKER_ARENA_SIZE   CONFIG_SAMSA_WORKER_ARENA_SIZE
 
 // App views of host objects (shadows, in scratch) and host copies of app
 // objects (in the arena), for types laid out differently.
@@ -62,7 +62,12 @@ typedef struct {
 
   SamsaCpu cpu;
   SamsaRegion regions[3];
+#if defined(CONFIG_SAMSA_BIND_SDK_DISPATCH) && defined(SAMSA_INSTRUCTION_HOOK)
+  SamsaHook hooks[2];
+  bool checked_sdk_dispatch;
+#else
   SamsaHook hooks[1];
+#endif
   bool running;
   uint32_t last_call;
 
@@ -618,11 +623,68 @@ static const char *prv_stop_name(SamsaStop stop) {
   process_manager_task_exit();
 }
 
+#if defined(CONFIG_SAMSA_BIND_SDK_DISPATCH) && defined(SAMSA_INSTRUCTION_HOOK)
+// jump_to_pbl_function emitted by the ARM SDK. Its final bx ip enters a host hook.
+// Only bind the exact sequence and its literal, both in the process's ordinary RAM.
+static bool prv_is_sdk_dispatch(const Process *p, uint32_t pc) {
+  static const uint16_t code[] = {
+    0xa303, // adr r3, .+16
+    0x6818, // ldr r0, [r3]
+    0x4408, // add r0, r1
+    0x6802, // ldr r2, [r0]
+    0x4694, // mov ip, r2
+    0xbc0f, // pop {r0-r3}
+    0x4760, // bx ip
+  };
+  const size_t size = p->ram_end - p->ram;
+  const uint32_t offset = pc - p->ram_base;
+  return !(pc & 3) && size >= 20 && offset <= size - 20 &&
+         memcmp(p->ram + offset, code, sizeof(code)) == 0 &&
+         samsa_rd32((const uint8_t *)p->ram + offset + 16) == GUEST_TABLE;
+}
+
+static bool prv_run_sdk_dispatch(Process *p) {
+  SamsaCpu *cpu = &p->cpu;
+  const uint32_t pc = cpu->r[15];
+  const uint32_t stack = cpu->r[13] - p->ram_base;
+  const uint32_t offset = cpu->r[1];
+  const size_t size = p->ram_end - p->ram;
+  // Fall back to instruction execution for IT blocks, modified code, indirect
+  // bus or faulting accesses. Leave all guest effects to Samsa in those cases.
+  if (cpu->itstate || (stack & 3) || size < 16 || stack > size - 16 ||
+      (offset & 3) || offset / 4 >= g_samsa_num_thunks || !prv_is_sdk_dispatch(p, pc)) {
+    cpu->num_hooks = 1;
+    return false;
+  }
+  const uint32_t hook = g_samsa_sdk_table[offset / 4];
+  memcpy(cpu->r, p->ram + stack, 4 * sizeof(uint32_t));
+  cpu->r[13] += 16;
+  cpu->r[12] = hook;
+  cpu->r[15] = hook & ~1U;
+  cpu->fault_pc = pc + 12;
+  return true;
+}
+#endif
+
 static SamsaStop prv_handler(SamsaCpu *cpu, SamsaStop why, void *ctx) {
   if (why != SAMSA_STOP_HOOK) {
     return why;
   }
   Process *p = cpu->user;
+#if defined(CONFIG_SAMSA_BIND_SDK_DISPATCH) && defined(SAMSA_INSTRUCTION_HOOK)
+  if (cpu->num_hooks == 2 && p->hooks[1].start == (cpu->r[15] | 1U)) {
+    if (!prv_run_sdk_dispatch(p)) {
+      return SAMSA_STOP_BUDGET;
+    }
+  } else if (!p->checked_sdk_dispatch) {
+    p->checked_sdk_dispatch = true;
+    uint32_t pc = cpu->fault_pc - 12;
+    if (prv_is_sdk_dispatch(p, pc)) {
+      p->hooks[1] = (SamsaHook)SAMSA_INSTRUCTION_HOOK(pc);
+      cpu->num_hooks = 2;
+    }
+  }
+#endif
   const uint32_t idx = (cpu->r[15] - SAMSA_GUEST_HOOKS) / 4;
   if (idx >= g_samsa_num_thunks) {
     return SAMSA_STOP_USAGE;
@@ -701,7 +763,10 @@ static void prv_reset(Process *p) {
   p->cpu.regions = p->regions;
   p->cpu.num_regions = PBL_ARRAY_SIZE(p->regions);
   p->cpu.hooks = p->hooks;
-  p->cpu.num_hooks = PBL_ARRAY_SIZE(p->hooks);
+  p->cpu.num_hooks = 1;
+#if defined(CONFIG_SAMSA_BIND_SDK_DISPATCH) && defined(SAMSA_INSTRUCTION_HOOK)
+  p->checked_sdk_dispatch = false;
+#endif
   p->cpu.bus = &s_bus;
   p->cpu.user = p;
 }
@@ -715,13 +780,23 @@ uint32_t process_runtime_address(PebbleTask task, const void *address) {
   return p->ram_base + (uint32_t)((const char *)address - p->ram);
 }
 
+size_t process_runtime_host_stack_size(const PebbleProcessMd *app_md) {
+  // The process's stack holds its ARM frames. A native build runs the
+  // interpreter on a host stack of its task's own; a firmware needs one.
+#ifdef CONFIG_SOC_POSIX
+  return 0;
+#else
+  return process_metadata_runs_natively(app_md) ? 0 : CONFIG_SAMSA_HOST_STACK_SIZE;
+#endif
+}
+
 uint32_t process_runtime_sdk_table(PebbleTask task) {
   return GUEST_TABLE;
 }
 
 void process_runtime_run(const PebbleProcessMd *app_md, PebbleTask task, void *entry,
                          void *stack_top) {
-  if (app_md->process_storage == ProcessStorageBuiltin) {
+  if (process_metadata_runs_natively(app_md)) {
     const PebbleMain main_func = entry;
     main_func();
     return;
@@ -736,4 +811,6 @@ void process_runtime_run(const PebbleProcessMd *app_md, PebbleTask task, void *e
   uint32_t ret;
   samsa_call_guest(entry_g, nullptr, 0, &ret);
   p->running = false;
+  PBL_LOG_DBG("%s used scratch %" PRIu32 ", arena %u, handles %u, objects %u", p->name,
+              p->scratch_used, (unsigned)p->arena_used, p->num_handles, p->num_objs);
 }

@@ -41,14 +41,39 @@ include(native_sdk)
 include(sdk)
 
 # Third-party apps call the firmware through the SDK shims. The recovery
-# firmware runs none, and a firmware for a CPU other than a watch's only runs
-# them with Samsa interpreting them. Either way the apps are the watch's, so
-# the SDK to build them with can be packaged from both.
-if(NOT CONFIG_RECOVERY_FW AND (CONFIG_CPU_CORTEX_M OR CONFIG_SAMSA))
+# firmware runs none. A firmware runs them on its CPU when they are of its
+# ABI (Cortex-M, RISC-V or Xtensa), and otherwise only with
+# Samsa interpreting them. Either way the apps are the watch's, so the SDK to
+# build them with can be packaged from all of these.
+if(NOT CONFIG_RECOVERY_FW AND (CONFIG_CPU_CORTEX_M OR CONFIG_SAMSA OR CONFIG_APP_NATIVE_ALIASED))
   pbl_native_sdk()
   add_dependencies(pbl_generated_headers pbl_native_sdk)
   set(PBL_FIRMWARE_SOURCES ${PBL_PEBBLE_AUTO_C})
   pbl_sdk()
+endif()
+
+# The code most of a UI redraw runs, from RAM: about 20 KiB that covered most of the instructions
+# of launcher, Settings and watchface redraws on qemu_esp32c3 (QEMU exec traces). Not memset and
+# memcpy: the startup code copies .ramfunc with them.
+if(CONFIG_RAMFUNC_DRAWING)
+  set(applib "*/CMakeFiles/pebble__applib.dir/graphics")
+  set_property(GLOBAL APPEND PROPERTY PBL_RAMFUNC_OBJECTS
+    "*libkernel.a:heap.c.obj"
+    "*libkernel.a:mutex.c.obj"
+    "*liblibutil.a:keyed_circular_cache.c.obj"
+    "*liblibutil.a:math.c.obj"
+    "${applib}/1_bit/bitblt_private.c.obj"
+    "${applib}/1_bit/framebuffer.c.obj"
+    "${applib}/bitblt.c.obj"
+    "${applib}/framebuffer.c.obj"
+    "${applib}/gbitmap.c.obj"
+    "${applib}/graphics_line.c.obj"
+    "${applib}/graphics_private.c.obj"
+    "${applib}/graphics_private_raw.c.obj"
+    "${applib}/text_render.c.obj"
+    "${applib}/text_resources.c.obj"
+    "*/CMakeFiles/pebble__applib.dir/fonts/codepoint.c.obj"
+  )
 endif()
 
 # Samsa runs the apps built against the SDK generated above.
@@ -97,9 +122,9 @@ if(NOT CONFIG_RECOVERY_FW)
     EXCLUDE apps/prf/** apps/samples/** apps/stored/**)
 endif()
 
-# The stored apps are built for the watch, which the recovery firmware runs
-# none on.
-if(NOT CONFIG_RECOVERY_FW AND NOT CONFIG_SOC_POSIX)
+# The stored apps are built for the watch's CPU, which the recovery firmware
+# runs none on.
+if(NOT CONFIG_RECOVERY_FW AND CONFIG_CPU_CORTEX_M)
   add_subdirectory(apps/stored ${pebble_bin}/apps/stored)
 endif()
 

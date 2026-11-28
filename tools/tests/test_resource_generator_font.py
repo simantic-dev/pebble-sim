@@ -4,13 +4,16 @@
 import contextlib
 import io
 import os
+import struct
 import sys
 import unittest
+from types import SimpleNamespace
 
 # Allow us to run even if not at the `tools` directory.
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.insert(0, root_dir)
 
+from font.fontgen import Font
 from resources.resource_map.resource_generator_font import FontResourceGenerator
 from resources.types.resource_definition import ResourceDefinition
 
@@ -28,7 +31,15 @@ def warning_for(name):
     return out.getvalue()
 
 
-def font_definition(name, pixel_height=None, extended=False, regex="[0]"):
+def font_definition(
+    name,
+    pixel_height=None,
+    extended=False,
+    regex="[0]",
+    render_height=None,
+    scale=1,
+    bits=1,
+):
     definition = ResourceDefinition("font", name, TTF_PATH)
     definition.max_glyph_size = 256
     definition.character_list = None
@@ -38,17 +49,50 @@ def font_definition(name, pixel_height=None, extended=False, regex="[0]"):
     definition.extended = extended
     definition.tracking_adjust = None
     definition.pixel_height = pixel_height
+    definition.render_height = render_height
+    definition.scale = scale
+    definition.bits = bits
     return definition
 
 
-def build_font(name, pixel_height=None, extended=False, regex="[0]"):
+def build_font(
+    name, pixel_height=None, extended=False, regex="[0]", render_height=None
+):
     """Build a few glyphs of the font, returning the stored height and anything printed."""
-    definition = font_definition(name, pixel_height, extended, regex)
+    definition = font_definition(name, pixel_height, extended, regex, render_height)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         data = FontResourceGenerator.build_font_data(TTF_PATH, definition)
     # The header opens with the version byte, then max_height
     return data[1], out.getvalue()
+
+
+class TestEdgeFontEncoding(unittest.TestCase):
+    def test_nibble_order_and_bitmap_pitch(self):
+        font = Font(TTF_PATH, 16, 256, 1024, False)
+        font.set_edges(4)
+        bitmap = SimpleNamespace(
+            width=4,
+            rows=2,
+            pitch=5,
+            buffer=bytes.fromhex("00 50 a0 f0 ff a0 f0 00 50 ff"),
+        )
+        w, h, x, y, advance, data = font._edge_glyph(bitmap, 0, 0, 4)
+        self.assertEqual((w, h, x, y, advance), (2, 1, 0, 0, 2))
+        self.assertEqual(data, struct.pack("<IHBHBH", 3, 2, 0, 0xFA50, 0, 0x50FA))
+
+    def test_long_gap_crosses_rows_and_preserves_intervening_ink(self):
+        font = Font(TTF_PATH, 16, 256, 1024, False)
+        font.set_edges(4)
+        pixels = bytearray(64 * 24)
+        # Logical positions 255 (solid black) and 383 (one covered subpixel).
+        for row in (14, 15):
+            pixels[row * 64 + 62 : row * 64 + 64] = bytes([255, 255])
+        pixels[22 * 64 + 62] = 255
+        bitmap = SimpleNamespace(width=64, rows=24, pitch=64, buffer=pixels)
+        *_, data = font._edge_glyph(bitmap, 0, 0, 64)
+        self.assertEqual(data[:48], (1 << 255).to_bytes(48, "little"))
+        self.assertEqual(data[48:], struct.pack("<HBHBH", 2, 255, 0xFFFF, 127, 15))
 
 
 class TestFontHeightFromName(unittest.TestCase):
@@ -149,6 +193,51 @@ class TestBuildFontData(unittest.TestCase):
         )
         self.assertEqual(height, 20)
         self.assertIn("the name gives 24", out)
+
+    def test_render_height_keeps_the_name_height_and_baseline(self):
+        # A stand-in for GOTHIC_24: glyphs drawn at 20 px on Gothic 24's line box and baseline
+        render = font_definition("UI_24", extended=True, regex="[H]", render_height=20)
+        # An extended font with pixelHeight draws the same glyphs on the same baseline
+        extension = font_definition("UI_24", 20, extended=True, regex="[H]")
+        with contextlib.redirect_stdout(io.StringIO()):
+            data = FontResourceGenerator.build_font_data(TTF_PATH, render)
+            expected = FontResourceGenerator.build_font_data(TTF_PATH, extension)
+        self.assertEqual(data[1], 24)
+        self.assertEqual(expected[1], 20)
+        self.assertEqual(data[:1] + data[2:], expected[:1] + expected[2:])
+
+    def test_scale_2_keeps_the_height_and_doubles_the_glyphs(self):
+        render = font_definition("UI_24", extended=True, regex="[H]", render_height=20)
+        double = font_definition(
+            "UI_24", extended=True, regex="[H]", render_height=20, scale=2
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            one = FontResourceGenerator.build_font_data(TTF_PATH, render)
+            two = FontResourceGenerator.build_font_data(TTF_PATH, double)
+        # Same stored height, the scale feature set, and glyphs about twice as wide
+        self.assertEqual(two[1], 24)
+        self.assertEqual(two[9] & 0x08, 0x08)
+        self.assertEqual(one[9] & 0x08, 0)
+        self.assertGreater(len(two), len(one))
+        with self.assertRaisesRegex(ValueError, "scale 2 needs renderHeight"):
+            FontResourceGenerator.build_font_data(
+                TTF_PATH, font_definition("UI_24", 20, extended=True, scale=2)
+            )
+
+    def test_two_bits_of_coverage(self):
+        one = font_definition(
+            "UI_24", extended=True, regex="[H]", render_height=20, scale=2
+        )
+        two = font_definition(
+            "UI_24", extended=True, regex="[H]", render_height=20, scale=2, bits=2
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            mono = FontResourceGenerator.build_font_data(TTF_PATH, one)
+            aa = FontResourceGenerator.build_font_data(TTF_PATH, two)
+        # The coverage feature is set and the bitmaps take about twice the bytes
+        self.assertEqual(aa[9] & 0x10, 0x10)
+        self.assertEqual(mono[9] & 0x10, 0)
+        self.assertGreater(len(aa), len(mono))
 
     def test_pixel_height_refuses_a_boolean(self):
         # int() would turn true into a 1 pixel font

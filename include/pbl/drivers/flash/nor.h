@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include <pbl/drivers/flash.h>
+#include <pbl/kernel/section.h>
 #include <pbl/util/bits.h>
 
 /**
@@ -13,7 +14,9 @@
  * @ingroup drivers_flash
  * @brief Description of the SPI NOR parts boards are fitted with.
  *
- * Parts share the command set below; a part only describes what differs between them.
+ * Parts share the command set below; a part only describes what differs between them. Each part
+ * is defined with PBL_FLASH_NOR_PART_DEFINE() in its own file, and linking that file adds it to
+ * the parts drivers identify at runtime by their JEDEC ID.
  * @{
  */
 
@@ -27,6 +30,7 @@
 #define PBL_FLASH_NOR_CMD_RDSR 0x05U
 /** Read status register 2. */
 #define PBL_FLASH_NOR_CMD_RDSR2 0x35U
+#define PBL_FLASH_NOR_CMD_RDFSR 0x70U
 /** Write status registers 1 and 2. */
 #define PBL_FLASH_NOR_CMD_WRSR 0x01U
 /** Write status register 2. */
@@ -85,11 +89,14 @@
 #define PBL_FLASH_NOR_SR2_QE PBL_BIT(1)
 /** Status register 2: erase suspended. */
 #define PBL_FLASH_NOR_SR2_SUS PBL_BIT(7)
+
+/* Flag status register bits */
+#define PBL_FLASH_NOR_FSR_ERASE_SUS PBL_BIT(6)
 /** @} */
 
 /** @brief Quad enable bit location, as in JESD216 BFPT DWORD 15. */
 enum pbl_flash_nor_qe {
-  /** No quad enable bit. */
+  /** No quad enable bit: the quad commands work as they are. */
   PBL_FLASH_NOR_QE_NONE,
   /** Status register 2 bit 1, written together with status register 1. */
   PBL_FLASH_NOR_QE_SR2_BIT1_WR_SR1,
@@ -136,6 +143,12 @@ struct pbl_flash_nor_otp {
 /** @brief The part has 4-byte address opcodes (13h, 0Ch, 12h, 34h, 21h, DCh, ...). */
 #define PBL_FLASH_NOR_F_4B_OPCODES PBL_BIT(0)
 
+/**
+ * @brief The part has a flag status register (70h) instead of status register 2: an erase is
+ * suspended when its bit 6 is set, and status register 1 is written alone.
+ */
+#define PBL_FLASH_NOR_F_FSR PBL_BIT(1)
+
 /** @brief A NOR part. */
 struct pbl_flash_nor_part {
   /** Name. */
@@ -166,11 +179,27 @@ struct pbl_flash_nor_part {
   uint16_t dpd_exit_us;
 };
 
+/**
+ * @brief Define a NOR part, one of those drivers identify at runtime.
+ *
+ * @param sym Symbol of the part.
+ */
+#define PBL_FLASH_NOR_PART_DEFINE(sym)                                                      \
+  const struct pbl_flash_nor_part sym PBL_ITERABLE_SECTION(const struct pbl_flash_nor_part, \
+                                                           flash_nor_part, #sym)
+
+/** @cond INTERNAL_HIDDEN */
+PBL_ITERABLE_SECTION_DECLARE(const struct pbl_flash_nor_part, flash_nor_part);
+/** @endcond */
+
 /** @brief GigaDevice GD25LQ255E. */
 extern const struct pbl_flash_nor_part pbl_flash_nor_gd25lq255e;
 
 /** @brief GigaDevice GD25Q256E. */
 extern const struct pbl_flash_nor_part pbl_flash_nor_gd25q256e;
+
+/** @brief Micron MT25QL512A. */
+extern const struct pbl_flash_nor_part pbl_flash_nor_mt25ql512a;
 
 /** @brief Puya PY25Q128HA. */
 extern const struct pbl_flash_nor_part pbl_flash_nor_py25q128ha;

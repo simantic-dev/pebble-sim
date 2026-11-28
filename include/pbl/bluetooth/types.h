@@ -209,27 +209,6 @@ enum pbl_bt_attribute_property {
   PBL_BT_ATTRIBUTE_PROPERTY_WRITING_REQUIRES_ENCRYPTION = (1 << 9),
 };
 
-/** @brief Opaque reference to a service object. */
-typedef uintptr_t pbl_bt_service_t;
-
-/** @brief Opaque reference to a characteristic object. */
-typedef uintptr_t pbl_bt_characteristic_t;
-
-/** @brief Opaque reference to a descriptor object. */
-typedef uintptr_t pbl_bt_descriptor_t;
-
-static_assert(sizeof(pbl_bt_descriptor_t) == sizeof(uintptr_t),
-              "pbl_bt_descriptor_t is invalid size");
-static_assert(sizeof(pbl_bt_characteristic_t) == sizeof(uintptr_t),
-              "pbl_bt_characteristic_t is invalid size");
-
-/** @brief Invalid service reference. */
-#define PBL_BT_SERVICE_INVALID ((pbl_bt_service_t)0)
-/** @brief Invalid characteristic reference. */
-#define PBL_BT_CHARACTERISTIC_INVALID ((pbl_bt_characteristic_t)0)
-/** @brief Invalid descriptor reference. */
-#define PBL_BT_DESCRIPTOR_INVALID ((pbl_bt_descriptor_t)0)
-
 /** @brief Bluetooth device address. */
 struct PBL_PACKED pbl_bt_addr {
   /** Address octets, least significant first. */
@@ -306,12 +285,7 @@ struct PBL_PACKED pbl_bt_device_internal {
       uint8_t rsvd : 1;
       /** True if @ref address is a random address, false if it is a public address. */
       bool is_random_address : 1;
-      /**
-       * Unused, zero.
-       *
-       * When adding flags, also update the @c bt_device_bits field of PebbleBLEGATTClientEvent
-       * and PebbleBLEConnectionEvent.
-       */
+      /** Unused, zero. */
       uint16_t zero : 14;
     };
     /** The same device, as the opaque type. */

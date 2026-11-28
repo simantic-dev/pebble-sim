@@ -79,6 +79,14 @@ ELLIPSIS_CODEPOINT = 0x2026
 # Features
 FEATURE_OFFSET_16 = 0x01
 FEATURE_RLE4 = 0x02
+# Glyph bitmaps, offsets and advances are at twice the resolution of the font's height
+FEATURE_SCALE2 = 0x08
+# Glyph bitmaps hold 2 bits of coverage per pixel (0 none to 3 full), 16 pixels per 32-bit word
+FEATURE_AA2 = 0x10
+# Each glyph is a 1-bit bitmap at the font's resolution followed by its edges: a uint16 count,
+# then x, y and the coverage of the 2x2 panel pixels of each pixel not fully covered (3 bytes)
+FEATURE_EDGES = 0x20
+FEATURE_EDGES4 = 0x40
 
 
 HASH_TABLE_SIZE = 255
@@ -107,7 +115,14 @@ def bits(x):
 
 class Font:
     def __init__(
-        self, ttf_path, height, max_glyphs, max_glyph_size, legacy, baseline=None
+        self,
+        ttf_path,
+        height,
+        max_glyphs,
+        max_glyph_size,
+        legacy,
+        baseline=None,
+        line_height=None,
     ):
         self.version = FONT_VERSION_3
         self.ttf_path = ttf_path
@@ -115,6 +130,10 @@ class Font:
         # Baseline row; defaults to max_height. Extended fonts pass the base
         # font's baseline so both align on a mixed line.
         self.baseline = int(baseline) if baseline is not None else self.max_height
+        # Height stored in the font, which lays out its lines; defaults to the render size
+        self.line_height = (
+            int(line_height) if line_height is not None else self.max_height
+        )
         self.legacy = legacy
         self.face = freetype.Face(self.ttf_path)
         self.face.set_pixel_sizes(0, self.max_height)
@@ -133,6 +152,11 @@ class Font:
         self.offset_tables = [[] for i in range(self.table_size)]
         self.offset_size_bytes = 4
         self.features = 0
+        self.scale = 1
+        self.autohint = False
+        self.bits = 1
+        self.fallback_face = None
+        self.edges = False
 
         self.glyph_header = "<BBbbb"
 
@@ -147,6 +171,130 @@ class Font:
             raise RuntimeError(
                 f"Unsupported compression engine: '{engine}'. Font {self.ttf_path}"
             )
+
+    def set_edges(self, bits=2):
+        """Store a 1-bit glyph and its edges at panel resolution, with two or four coverage bits."""
+        self.edges = True
+        self.bits = bits
+        self.features = (
+            self.features & ~(FEATURE_SCALE2 | FEATURE_AA2)
+        ) | FEATURE_EDGES
+        if bits == 4:
+            self.features |= FEATURE_EDGES4
+
+    def _edge_glyph(self, bitmap, left2, top2, advance2):
+        """The glyph at the font's resolution, inked at half coverage, and its edge pixels."""
+        w2, h2 = bitmap.width, bitmap.rows
+        bits = self.bits
+        full = (1 << bits) - 1
+        level = {}
+        for y in range(h2):
+            row = bitmap.buffer[y * bitmap.pitch : y * bitmap.pitch + w2]
+            for x, v in enumerate(row):
+                if v >> (8 - bits):
+                    level[(left2 + x, top2 + y)] = v >> (8 - bits)
+        # Pixels of the font's resolution are 2x2 panel pixels on even panel coordinates
+        cx0, cy0 = left2 // 2, top2 // 2
+        cx1, cy1 = (left2 + w2 - 1) // 2, (top2 + h2 - 1) // 2
+        width, height = cx1 - cx0 + 1, cy1 - cy0 + 1
+        base, edges = [], []
+        for cy in range(cy0, cy1 + 1):
+            for cx in range(cx0, cx1 + 1):
+                cell = 0
+                for i in range(4):
+                    cell |= level.get((2 * cx + (i & 1), 2 * cy + (i >> 1)), 0) << (
+                        bits * i
+                    )
+                total = sum((cell >> (bits * i)) & full for i in range(4))
+                base.append(1 if total >= 2 * full else 0)
+                if cell in (0, (1 << (4 * bits)) - 1):
+                    continue
+                if bits == 4:
+                    # Skip cells whose four panel tones all equal the base bitmap.
+                    x, y = 2 * (cx - cx0), 2 * (cy - cy0)
+                    if all(
+                        (((cell >> (4 * i)) & 15) + (2 * (x + i % 2) + y + i // 2) % 5)
+                        // 5
+                        == 3 * base[-1]
+                        for i in range(4)
+                    ):
+                        continue
+                edges.append((cx - cx0, cy - cy0, cell))
+        packed = []
+        for word in grouper(32, base, 0):
+            w = 0
+            for index, bit in enumerate(word):
+                w |= bit << index
+            packed.append(struct.pack("<I", w))
+        if bits == 4:
+            # Encode the sorted positions as gaps, retaining three bytes per cached edge.
+            records = bytearray()
+            next_pos = 0
+            for x, y, coverage in edges:
+                pos = y * width + x
+                while pos - next_pos > 255:
+                    fill = next_pos + 255
+                    records.extend(struct.pack("<BH", 255, 0xFFFF if base[fill] else 0))
+                    next_pos = fill + 1
+                records.extend(struct.pack("<BH", pos - next_pos, coverage))
+                next_pos = pos + 1
+            packed.append(struct.pack("<H", len(records) // 3))
+            packed.append(records)
+        else:
+            packed.append(struct.pack("<H", len(edges)))
+            packed.extend(struct.pack("<BBB", *edge) for edge in edges)
+        data = b"".join(packed)
+        data += b"\0" * (-len(data) % 4)
+        if len(data) > self.max_glyph_size:
+            raise RuntimeError(
+                f"Glyph too large! {len(data)} > {self.max_glyph_size}. Font {self.ttf_path}"
+            )
+        return width, height, cx0, cy0, advance2 // 2, data
+
+    def set_fallback(self, path):
+        """Draw the codepoints the font lacks from another one, at the same capital height."""
+        self.fallback_face = freetype.Face(path)
+
+    def _load_flags(self):
+        if self.bits > 1:
+            flags = freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_LIGHT
+        elif self.legacy:
+            flags = freetype.FT_LOAD_RENDER
+        else:
+            flags = (
+                freetype.FT_LOAD_RENDER
+                | freetype.FT_LOAD_MONOCHROME
+                | freetype.FT_LOAD_TARGET_MONO
+            )
+        return flags
+
+    def _cap_height(self, face):
+        face.load_char("H", self._load_flags())
+        return face.glyph.bitmap.rows
+
+    def _size_fallback(self):
+        """The largest size of the fallback font whose capitals are no taller than ours."""
+        target = self._cap_height(self.face)
+        best = 1
+        for size in range(1, 4 * self.max_height):
+            self.fallback_face.set_pixel_sizes(0, size)
+            if self._cap_height(self.fallback_face) <= target:
+                best = size
+        self.fallback_face.set_pixel_sizes(0, best)
+
+    def set_bits2(self):
+        """Store 2 bits of coverage per pixel, rasterised antialiased."""
+        self.bits = 2
+        self.features |= FEATURE_AA2
+
+    def set_autohint(self):
+        """Use FreeType's auto-hinter, for fonts whose own hinting gives uneven stems."""
+        self.autohint = True
+
+    def set_scale2(self):
+        """Store glyphs at twice the resolution; the stored height stays the font's own."""
+        self.scale = 2
+        self.features |= FEATURE_SCALE2
 
     def set_version(self, version):
         self.version = version
@@ -299,13 +447,21 @@ class Font:
             | freetype.FT_LOAD_MONOCHROME
             | freetype.FT_LOAD_TARGET_MONO
         )
+        if self.bits > 1:
+            # Antialiased, with light hinting before coverage quantization
+            flags = freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_LIGHT
+        if self.autohint:
+            flags |= freetype.FT_LOAD_FORCE_AUTOHINT
         self.face.load_glyph(gindex, flags)
         # Font metrics
         bitmap = self.face.glyph.bitmap
         advance = (
             self.face.glyph.advance.x // 64
         )  # Convert 26.6 fixed float format to px
-        advance += self.tracking_adjust
+        if self.scale == 2:
+            # Whole pixels of the font's own resolution, so text stays on its pixel grid
+            advance = 2 * ((self.face.glyph.advance.x + 64) // 128)
+        advance += self.tracking_adjust * self.scale
         width = bitmap.width
         height = bitmap.rows
         left = self.face.glyph.bitmap_left
@@ -313,7 +469,32 @@ class Font:
         pixel_mode = self.face.glyph.bitmap.pixel_mode
 
         glyph_packed = []
-        if height and width:
+        if self.edges:
+            if height and width:
+                width, height, left, bottom, advance, data = self._edge_glyph(
+                    bitmap, left, bottom, advance
+                )
+                glyph_packed = [data]
+            else:
+                width = height = 0
+                advance //= 2
+        elif height and width and self.bits == 2:
+            levels = []
+            for i in range(bitmap.rows):
+                row = bitmap.buffer[i * bitmap.pitch : i * bitmap.pitch + bitmap.width]
+                levels.extend(v >> 6 for v in row)
+            for word in grouper(16, levels, 0):
+                w = 0
+                for index, level in enumerate(word):
+                    w |= level << (2 * index)
+                glyph_packed.append(struct.pack("<I", w))
+            size = ((width * height * 2) + (8 - 1)) // 8
+            if size > self.max_glyph_size:
+                raise RuntimeError(
+                    f"Glyph too large! codepoint {codepoint}: {size} > "
+                    f"{self.max_glyph_size}. Font {self.ttf_path}"
+                )
+        elif height and width:
             glyph_bitmap = []
             if pixel_mode == 1:  # monochrome font, 1 bit per pixel
                 for i in range(bitmap.rows):
@@ -365,7 +546,7 @@ class Font:
             s = struct.Struct("<BBHHBB")
             return s.pack(
                 self.version,
-                self.max_height,
+                self.line_height,
                 self.number_of_glyphs,
                 self.wildcard_codepoint,
                 self.table_size,
@@ -375,7 +556,7 @@ class Font:
             s = struct.Struct("<BBHHBBBB")
             return s.pack(
                 self.version,
-                self.max_height,
+                self.line_height,
                 self.number_of_glyphs,
                 self.wildcard_codepoint,
                 self.table_size,
@@ -471,6 +652,30 @@ class Font:
                 glyph_entries.append((codepoint, offset))
 
             codepoint, gindex = self.face.get_next_char(codepoint, gindex)
+
+        if self.fallback_face is not None:
+            # Codepoints the font lacks, from the fallback font, which has its own glyph indices
+            self._size_fallback()
+            have = {entry[0] for entry in glyph_entries}
+            primary = self.face
+            self.face = self.fallback_face
+            fallback_lookup = {}
+            try:
+                for codepoint in sorted(set(self.codepoints)):
+                    gindex = self.face.get_char_index(codepoint)
+                    if (
+                        codepoint in have
+                        or not gindex
+                        or not codepoint_is_in_subset(codepoint)
+                        or self.number_of_glyphs > self.max_glyphs
+                    ):
+                        continue
+                    offset, next_offset, fallback_lookup = add_glyph(
+                        codepoint, next_offset, gindex, fallback_lookup
+                    )
+                    glyph_entries.append((codepoint, offset))
+            finally:
+                self.face = primary
 
         # Decide if we need 2 byte or 4 byte offsets
         glyph_data_bytes = sum(len(glyph) for glyph in self.glyph_table)

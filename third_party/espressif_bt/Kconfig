@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: 2026 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig ESP32C3_BT
+    bool "Espressif ESP32-C3/S3 Bluetooth LE controller"
+    depends on SOC_ESP32C3 || SOC_ESP32S3
+    select CRC
+    select MCU
+    select RNG
+    help
+      Link Espressif's Bluetooth LE controller and PHY libraries, from
+      the esp32c3-bt-lib and esp-phy-lib submodules, with the glue that
+      runs them on PebbleOS. Nothing starts the controller unless asked
+      to: the btc shell command, or NimBLE's HCI transport once armed
+      (or at every boot, with ESP32C3_BT_ARMED_BY_DEFAULT).
+      Each bring-up arms the RTC watchdog until btc confirm proves the
+      USB console alive, and a bring-up that never completed keeps the
+      controller off at the following boots.
+
+if ESP32C3_BT
+
+config ESP32C3_BT_CONTROLLER_IN_FLASH
+    bool "Controller linked whole in flash"
+    help
+      Link the controller library built to run from flash
+      (libbtdm_app_flash.a) rather than the one that patches the
+      controller in ROM (libbtdm_app.a). It saves about 23 KiB of RAM
+      code, but its interrupt handlers then run from flash through the
+      cache: on the Xteink X4 an advertising event's handler took over
+      3 ms and the events were scheduled too late to go on air.
+
+config ESP32C3_BT_CONTROLLER_PRIO
+    int "Controller thread priority"
+    default 4
+    help
+      Priority of the controller's thread, above the NimBLE host's, as
+      ESP-IDF runs it two below its highest.
+
+config ESP32C3_BT_CONTROLLER_STACK_SIZE
+    int "Controller thread stack size in bytes"
+    default 3584
+    help
+      ESP-IDF gives the controller task 3584 bytes.
+
+config ESP32C3_BT_BLE_MAX_ACT
+    int "BLE activities"
+    range 1 10
+    default 3
+    help
+      Advertising, scanning, connection and initiating instances the
+      controller allocates for: each costs heap. The watch advertises
+      and keeps one connection.
+
+config ESP32C3_BT_CONFIRM_TIMEOUT_S
+    int "Seconds to confirm a bring-up"
+    range 5 3600
+    default 30
+    help
+      The RTC watchdog resets the chip this long after a bring-up starts
+      unless btc confirm stops it.
+
+config ESP32C3_BT_ARMED_BY_DEFAULT
+    bool "Use the controller without btc arm"
+    help
+      NimBLE's HCI transport brings the controller up at every boot, not
+      only once btc arm asked for it. A bring-up that failed or hung
+      still keeps the controller off at the following boots, on the fake
+      HCI, until btc clear.
+
+config ESP32C3_BT_REQUIRE_CONFIRM
+    bool "Require a confirmation of every bring-up"
+    default n if ESP32C3_BT_ARMED_BY_DEFAULT
+    default y
+    help
+      Keep the RTC watchdog armed after a bring-up until btc confirm,
+      typed on the console, proves the USB console alive; without it,
+      the chip resets. Turn it off once the radio is proven on a board,
+      e.g. for test runs that restart the watch: the watchdog then only
+      covers the bring-up itself.
+
+config ESP32C3_BT_SHELL
+    bool "Shell commands"
+    default y
+    depends on SHELL
+    help
+      The btc command: start, confirm, arm and clear the controller,
+      send it raw HCI packets, dump clock and power registers.
+
+module = ESP32C3_BT
+module-str = ESP32-C3 Bluetooth controller
+source "subsys/logging/Kconfig.template.log_level"
+
+endif # ESP32C3_BT

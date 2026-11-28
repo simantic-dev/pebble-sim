@@ -3,10 +3,13 @@
 
 pbl_library()
 pbl_library_sources(uart.c)
+pbl_library_sources_ifdef(CONFIG_UART_ESP32C3 esp32c3.c)
+pbl_library_sources_ifdef(CONFIG_UART_ESP32C3_USB_SERIAL_JTAG esp32c3_usb_serial_jtag.c)
 pbl_library_sources_ifdef(CONFIG_UART_QEMU qemu.c)
 pbl_library_sources_ifdef(CONFIG_UART_POSIX posix/uart_posix.c)
 pbl_library_sources_ifdef(CONFIG_UART_NRF5 nrf5.c)
 pbl_library_sources_ifdef(CONFIG_UART_SF32LB sf32lb.c)
+pbl_library_sources_ifdef(CONFIG_UART_STM32 stm32.c)
 pbl_library_sources_ifdef(CONFIG_UART_SHELL shell.c)
 if(CONFIG_UART_POSIX)
   pbl_host_sources(posix/uart_posix_bottom.c)

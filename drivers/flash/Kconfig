@@ -35,27 +35,26 @@ config FLASH_SPI_NOR
     select FLASH_OTP
     select REGULATOR
     help
-      Support for a JEDEC NOR flash on a SPI memory controller, of the
-      part the board names, described by its SFDP tables and the part
-      description.
+      Support for a JEDEC NOR flash on a SPI memory controller, described
+      by its SFDP tables and the description of the part it is identified
+      as by its JEDEC ID, among the parts enabled below. Boards enable the
+      parts they can be fitted with.
+
+if FLASH_SPI_NOR
 
 config FLASH_SPI_NOR_GD25LQ255E
     bool "GigaDevice GD25LQ255E"
-    default y
-    depends on DT_HAS_GIGADEVICE_GD25LQ255E_ENABLED
-    depends on FLASH_SPI_NOR
 
 config FLASH_SPI_NOR_GD25Q256E
     bool "GigaDevice GD25Q256E"
-    default y
-    depends on DT_HAS_GIGADEVICE_GD25Q256E_ENABLED
-    depends on FLASH_SPI_NOR
+
+config FLASH_SPI_NOR_MT25QL512A
+    bool "Micron MT25QL512A"
 
 config FLASH_SPI_NOR_PY25Q128HA
     bool "Puya PY25Q128HA"
-    default y
-    depends on DT_HAS_PUYA_PY25Q128HA_ENABLED
-    depends on FLASH_SPI_NOR
+
+endif
 
 config FLASH_QEMU
     bool "QEMU External Flash"
@@ -63,6 +62,24 @@ config FLASH_QEMU
     depends on DT_HAS_QEMU_PEBBLE_EXTFLASH_ENABLED
     help
       Support for the QEMU external flash peripheral.
+
+config FLASH_ESP32C3
+    bool "ESP32-C3 flash"
+    default y
+    depends on DT_HAS_ESP_ESP32C3_FLASH_ENABLED
+    depends on RAMFUNC
+    help
+      Support for the flash an ESP32-C3 runs from, written and erased
+      through the ROM's SPI1 routines.
+
+config FLASH_ESP32S3
+    bool "ESP32-S3 flash"
+    default y
+    depends on DT_HAS_ESP_ESP32S3_FLASH_ENABLED
+    depends on RAMFUNC
+    help
+      Support for the flash an ESP32-S3 runs from, written and erased
+      through the ROM's SPI1 routines.
 
 config FLASH_POSIX
     bool "POSIX External Flash"

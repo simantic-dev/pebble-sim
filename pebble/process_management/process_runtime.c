@@ -10,12 +10,22 @@
 //! This comes from the generated pebble.auto.c with all the exported functions in it.
 extern const void *const g_pbl_system_tbl[];
 
+#if !defined(CONFIG_CPU_CORTEX_M) && !defined(CONFIG_SAMSA) && !defined(CONFIG_SOC_POSIX) && \
+    !defined(CONFIG_APP_NATIVE_ALIASED) && !defined(UNITTEST)
+// Without the SDK shims, which are only built for a CPU third-party apps run on
+const void *const g_pbl_system_tbl[] = {0};
+#endif
+
 PBL_WEAK uint32_t process_runtime_address(PebbleTask task, const void *address) {
   return (uint32_t)(uintptr_t)address;
 }
 
 PBL_WEAK uint32_t process_runtime_sdk_table(PebbleTask task) {
   return (uint32_t)(uintptr_t)&g_pbl_system_tbl;
+}
+
+PBL_WEAK size_t process_runtime_host_stack_size(const PebbleProcessMd *app_md) {
+  return 0;
 }
 
 PBL_WEAK void process_runtime_run(const PebbleProcessMd *app_md, PebbleTask task, void *entry,

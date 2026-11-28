@@ -119,6 +119,10 @@ typedef struct FontCache {
   uint8_t glyph_buffer[sizeof(LineCacheData) + CACHE_GLYPH_SIZE];
   KeyedCircularCache line_cache;
   const FontResource *cached_font;
+#ifdef CONFIG_MMAP_RESOURCES
+  const uint8_t *mapped_font;
+  size_t mapped_font_size;
+#endif
   //! g_font_language_generation the cache was filled under
   uint32_t language_generation;
   //! System font that language_fonts extend, and the slots already fetched for it
@@ -153,6 +157,15 @@ GRect text_resources_get_glyph_frame(FontCache *font_cache, Codepoint codepoint,
                                      FontInfo *font_info);
 
 bool text_resources_glyph_is_color(const GlyphLocation *location);
+
+//! Whether the glyph is stored at twice its font's resolution (FEATURE_SCALE2)
+bool text_resources_glyph_is_scale2(const GlyphLocation *location);
+
+//! Whether the glyph is followed by its edges at panel resolution (FEATURE_EDGES)
+bool text_resources_glyph_has_edges(const GlyphLocation *location);
+
+//! Whether the glyph holds 2 bits of coverage per pixel (FEATURE_AA2)
+bool text_resources_glyph_is_aa2(const GlyphLocation *location);
 
 //! Empties the font cache, e.g. on context init or after the language packs changed
 void text_resources_reset_cache(FontCache *font_cache);

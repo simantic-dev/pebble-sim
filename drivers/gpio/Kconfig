@@ -16,6 +16,13 @@ config GPIO_NRF5
     help
       Support for the Nordic nRF5 GPIO controller.
 
+config GPIO_NRF5_IRQ_PRIO
+    int "Interrupt priority"
+    default 1
+    depends on GPIO_NRF5
+    help
+      Priority of the GPIOTE interrupt.
+
 config GPIO_SF32LB
     bool "SiFli SF32LB"
     default y
@@ -29,10 +36,43 @@ config GPIO_SF32LB
 
 config GPIO_SF32LB_IRQ_PRIO
     int "Interrupt priority"
-    default 5
+    default 0
     depends on GPIO_SF32LB
     help
       Priority of the port interrupt.
+
+config GPIO_STM32
+    bool "ST STM32"
+    default y
+    depends on DT_HAS_ST_STM32H743_PINCTRL_ENABLED
+    select CLK
+    select INTC
+    help
+      Support for the ST STM32 GPIO ports, and their interrupts through
+      EXTI.
+
+config GPIO_STM32_IRQ_PRIO
+    int "Interrupt priority"
+    default 0
+    depends on GPIO_STM32
+    help
+      Priority of the EXTI interrupts.
+
+config GPIO_ESP32C3
+    bool "Espressif ESP32-C3"
+    default y
+    depends on DT_HAS_ESP_ESP32C3_GPIO_ENABLED
+    select INTC
+    help
+      Support for the GPIO matrix of the ESP32-C3, and the interrupts of
+      its pins.
+
+config GPIO_ESP32C3_IRQ_PRIO
+    int "Interrupt priority"
+    default 0
+    depends on GPIO_ESP32C3
+    help
+      Priority of the GPIO interrupt.
 
 config GPIO_QEMU
     bool "QEMU GPIO"
@@ -44,7 +84,7 @@ config GPIO_QEMU
 
 config GPIO_QEMU_IRQ_PRIO
     int "Interrupt priority"
-    default 5
+    default 0
     depends on GPIO_QEMU
     help
       Priority of the port interrupt.

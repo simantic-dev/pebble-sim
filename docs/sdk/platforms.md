@@ -5,13 +5,28 @@ A platform is what apps are built against. It is a name and a description:
 | Part | Values |
 | --- | --- |
 | Display | width and height; rectangular or round; colour (8-bit) or black and white (1-bit) |
-| Features | `microphone`, `smartstrap`, `smartstrap_power`, `health`, `compass`, `touch`, `rgb_backlight`, `speaker` |
+| Features | `microphone`, `smartstrap`, `smartstrap_power`, `health`, `compass`, `touch`, `rgb_backlight`, `speaker`, `barometer` |
 | Limits | what an app may take: code and memory, worker memory, resources, the largest font glyph |
-| ABI | what app binaries are compiled for; `armv7m` is Cortex-M3 Thumb code with soft float |
+| ABI | what app binaries are compiled for: `armv7m`, Cortex-M3 Thumb code with soft float, `riscv32`, RV32IMC code with soft float (xteinkx4), or `xtensa`, ESP32-S3 LX7 windowed ABI (xteinkx4pro) |
 
 The name labels the platform's directory in the SDK and in a `.pbw`.
 Everything the builds need to know of a platform follows from its
 description.
+
+The firmware's platforms:
+
+| Platform | Display | Hardware |
+| --- | --- | --- |
+| Emery | 200 × 228, colour | Pebble Time 2 |
+| Flint | 144 × 168, black and white | Pebble 2 Duo |
+| Gabbro | 260 × 260 round, colour | Pebble Round 2 |
+| Cyberdeck | 400 × 240, black and white | Cyberdeck |
+| xteinkx4pro | 240 × 400, black and white, `xtensa` | Xteink X4 Pro, BOOX Picco and qemu_esp32s3 |
+| xteinkx4 | 240 × 400, black and white, `riscv32` | Xteink X4, its 480 × 800 e-paper panel at two panel pixels per pixel |
+
+For the X4 Pro hardware SDK, external CMake builds, and console installation,
+see {doc}`building`. The native PBW directory is `xteinkx4pro/`.
+Native apps run with the firmware's memory privileges.
 
 ## Where platforms are defined
 
@@ -89,6 +104,14 @@ bar, default text sizes) is that of the nearest of Emery, Flint and Gabbro:
 Gabbro if the display is round, Emery if it is rectangular and colour, Flint
 otherwise.
 
+A platform without a type of its own, such as xteinkx4, reports that nearest
+one to apps, but its display is not that one's. Its own apps fill the
+display; a third-party app is given the display of the platform it was built
+for, which the compositor centres in a black bezel. With
+`CONFIG_WATCHFACE_BEZEL`, as on the xteinkx4 boards, the built-in watchfaces get
+the 144 × 168 of the classic watches too, rather than a display whose pixels
+are too small for them.
+
 ## In the SDK
 
 `pbl build sdk` writes the description of the build's platform to
@@ -165,14 +188,14 @@ header's flags says the record is there.
 | --- | --- | --- |
 | 0xA8 | 1 | version (1) |
 | 0xA9 | 1 | length of the record in bytes (16) |
-| 0xAA | 1 | ABI (1 is `armv7m`) |
+| 0xAA | 1 | ABI (1 is `armv7m`, 2 `riscv32`) |
 | 0xAB | 1 | display shape: 0 rectangular, 1 round |
 | 0xAC | 2 | display width |
 | 0xAE | 2 | display height |
 | 0xB0 | 4 | features, one bit each in the order of the list above |
 | 0xB4 | 2 | app memory the binary needs, in KiB |
 | 0xB6 | 1 | bits of colour of a pixel: 1 for black and white, 6 for 64 colours |
-| 0xB7 | 1 | flags: bit 0 is set in a flexible binary |
+| 0xB7 | 1 | flags: bit 0 is set in a flexible binary, bit 1 in one with a set of resource packs |
 
 Fields are only added at the end and the length grows with them, so a reader
 skips what it does not know. It also ignores the feature bits it does not
@@ -185,6 +208,13 @@ gives it a framebuffer of the display's size. The features of any other binary s
 has and are not held against the watch. Firmware that predates the flag
 cannot read a record without a display size and takes the binary to be for
 its own platform.
+
+A binary with bit 1 set works with any of several resource packs
+({ref}`below <resource-packs>`). The `resource_timestamp` of its
+`PebbleProcessInfo` is then the ID of the set, and the firmware launches it
+with resources whose manifest has that ID for a timestamp, where it
+otherwise asks for the pack whose CRC is the header's `resource_crc`. The ID
+is never zero, which is the timestamp of a pack of no set.
 
 A platform that `PebbleProcessInfoFlags` has no value for, and every
 flexible binary, is
@@ -205,7 +235,7 @@ binary to a watch without knowing the platform's name:
   "name": "flint",
   "abi": "armv7m",
   "display": { "width": 144, "height": 168, "shape": "rect", "color": false },
-  "features": ["microphone", "health", "compass", "speaker"],
+  "features": ["microphone", "health", "compass", "speaker", "barometer"],
   "limits": { "app_memory": 65536 }
 }
 ```
@@ -230,6 +260,31 @@ in place of those of a platform:
 
 A reader that predates flexible binaries cannot read a display without a
 size, and passes the directory over.
+
+(resource-packs)=
+### Resource packs
+
+An image drawn for a small display is not right on a large one. A flexible
+binary may come with several resource packs, each for displays of at least
+a size, and whatever installs the pbw sends the one for the watch. They sit
+beside the default pack and the manifest lists them:
+
+```json
+"resources": { "name": "app_resources.pbpack", "size": 4252, "crc": 2913461832, "timestamp": 1779213600 },
+"resourcePacks": [
+  { "name": "app_resources~144w.pbpack", "minWidth": 144, "minHeight": 0, "size": 4253, "crc": 626061606 },
+  { "name": "app_resources~200w.pbpack", "minWidth": 200, "minHeight": 0, "size": 4254, "crc": 295332425 }
+]
+```
+
+- Every pack has the same resources under the same IDs. They differ in
+  which file of the project each resource was made from.
+- The pack to send is the one with the largest `minWidth`, and of those the
+  largest `minHeight`, among the packs whose minimums the watch's display
+  meets. If none does, or the installer knows nothing of packs, it is the
+  default pack under `resources`, which is for the smallest displays.
+- All packs of a binary carry the ID of their set, so the binary launches
+  with any of them and with no pack of another build.
 
 ## What a watch says
 

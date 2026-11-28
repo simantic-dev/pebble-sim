@@ -7,12 +7,12 @@
 #include <pbl/kernel/compiler.h>
 #include <pbl/kernel/time.h>
 #include <pbl/services/evented_timer.h>
+#include <pbl/services/notifications/ancs/ancs.h>
 #include <pbl/services/notifications/ancs/ancs_notifications.h>
 #include <pbl/services/phone_call_util.h>
 #include <pbl/util/size.h>
 
 #include <clar.h>
-#include <comm/ble/kernel_le_client/ancs/ancs.h>
 
 // Stubs
 ///////////////////////////////////////////////////////////
@@ -591,12 +591,6 @@ void test_ancs__notification_dismissal(void) {
     .category_count = 1,
   };
 
-  // Notification removal without DIS service - notification shouldn't be acted upon
-  prv_fake_receiving_ns_notification(sizeof(ns_notification), (uint8_t *)&ns_notification);
-  cl_assert_equal_i(fake_kernel_services_notifications_acted_upon_count(), 0);
-
-  // DIS service / iOS 9+ detected - enabling notification dismissal
-  ancs_handle_ios9_or_newer_detected();
   prv_fake_receiving_ns_notification(sizeof(ns_notification), (uint8_t *)&ns_notification);
   cl_assert_equal_i(fake_kernel_services_notifications_acted_upon_count(), 1);
 }

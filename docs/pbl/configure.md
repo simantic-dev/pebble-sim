@@ -16,11 +16,34 @@ after `/`: `native_emery/wasm` builds the native watch as WebAssembly. It
 applies `boards/<board>/defconfig.<variant>` and can bring its own
 toolchain (`toolchain.<variant>.cmake`).
 
+A board with several cores, listed under `cores:` in `boards/<board>/<board>.yml`,
+is built for one of them at a time, named after `/` the same way:
+`stm32h747i_disco/m7` and `stm32h747i_disco/m4` are two builds, configured,
+built and flashed on their own. Such a board takes no bare name. A board
+variant then comes after the core, as `<board>/<core>/<variant>`: the full name
+is `BOARD[@REVISION][/CORE][/VARIANT]`. Each core lists its own variants,
+in place of the board's `variants:`, a core being a name or a mapping with its
+`name` and `variants`:
+
+```yaml
+cores:
+  - m7
+  - name: m4
+    variants:
+      - <variant>
+```
+
+The core and the variant pick their own board files, those of the core
+first, then the variant's, then those of the core with the variant
+(`<core>_<variant>`), as
+{doc}`../development/build_system/kconfig` and
+{doc}`../development/build_system/devicetree` list.
+
 ## Add-ons
 
 `--addon` plugs an add-on, such as a display module, into a connector of
 the board, and can be repeated. They are listed in
-{doc}`../boards/addons/index`:
+{doc}`../addons/index`:
 
 ```shell
 pbl configure --board sf32lb57_dpi_hdk --addon <addon> samples/demos/logo
