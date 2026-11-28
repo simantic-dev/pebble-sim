@@ -1,0 +1,5 @@
+# PebbleOS on the Xteink X4 (ESP32-C3): panel, buttons and control port for sim/reader.html.
+machines:
+  x4: { mcu: ESP32-C3, elf: out/flash.bin, overlay: x4.board }
+controlPort: 21777
+timeout: 86400
