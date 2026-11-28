@@ -57,7 +57,7 @@ class Slave:
             was, self.dc = self.dc, level
             if was and not level:
                 self.pbits = 0
-            elif level and not was and self.pbits == 8 and self.pcmd in (0x70, 0x71):
+            elif level and not was and self.pbits >= 8 and self.pcmd in (0x70, 0x71):  # last 8 bits: CS frames it on glass
                 data = [0x13] if self.pcmd == 0x71 else [0, 0, self.id, 0xFF, 0xFF]
                 self.rx = [(b >> (7 - i)) & 1 for b in data for i in range(8)]
                 self._drive()
