@@ -913,9 +913,14 @@ static int prv_disable(const struct pbl_display *disp) {
 
 #ifdef CONFIG_DISPLAY_UC8279_X4
   if (epd->state->uc8179) {
-    // Each refresh powers the panel off, so there is nothing to turn off here
+    // The panel stays powered between refreshes; power it off when the display is disabled
+    if (pbl_display_update_in_progress(disp)) {
+      pbl_mutex_unlock(&epd->state->lock);
+      return -EBUSY;
+    }
+    ret = uc8179_x4_power_off(epd);
     pbl_mutex_unlock(&epd->state->lock);
-    return 0;
+    return ret;
   }
   if (epd->state->uc8279) {
     if (pbl_display_update_in_progress(disp)) {
@@ -1960,9 +1965,9 @@ static int prv_update(const struct pbl_display *disp, const struct pbl_display_b
 
 #ifdef CONFIG_DISPLAY_UC8279_X4
   if (epd->state->uc8179) {
-    ret = uc8179_x4_update(epd, buf);
+    // Refreshes run on the panel thread, which completes the display class.
+    uc8279_x4_submit(epd, buf, y0, y1);
     pbl_mutex_unlock(&state->lock);
-    pbl_display_complete(disp, ret);
     return 0;
   }
   if (epd->state->uc8279) {

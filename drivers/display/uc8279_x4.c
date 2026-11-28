@@ -2,6 +2,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "uc8279_x4.h"
+#include "uc8179_x4.h"
 #include "uc8279_x4_cursor.h"
 
 #include "geometry.h"
@@ -123,8 +124,8 @@ static void prv_panel_thread(void *arg) {
   for (;;) {
     (void)pbl_sem_take(&state->frame_ready, PBL_FOREVER);
     (void)pbl_mutex_lock(&state->lock, PBL_FOREVER);
-    int ret = state->next_grey
-                  ? uc8279_x4_finish_grey(epd, &state->next_frame)
+    int ret = state->uc8179     ? uc8179_x4_update(epd, &state->next_frame)
+              : state->next_grey ? uc8279_x4_finish_grey(epd, &state->next_frame)
                   : prv_update_bw(epd, &state->next_frame, state->next_y0, state->next_y1);
 #ifdef CONFIG_DISPLAY_UC8279_LOCAL_TEXT
     bool keep = !ret && state->panel_id[0][3] == 0x68 && state->next_frame.system_ui;
@@ -151,6 +152,11 @@ int uc8279_x4_init(const struct pbl_display_ssd1677 *epd) {
   if (ret != 0) {
     return ret;
   }
+  return uc8279_x4_start_thread(epd);
+}
+
+// The panel thread: refreshes run here and complete the display class (UC8279 and UC8179).
+int uc8279_x4_start_thread(const struct pbl_display_ssd1677 *epd) {
   struct pbl_display_ssd1677_state *state = epd->state;
   pbl_sem_init(&state->frame_ready, 0, 1);
   const struct pbl_thread_attr attr = {

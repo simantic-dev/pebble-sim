@@ -22,6 +22,7 @@ int uc8279_x4_prepare_grey(const struct pbl_display_ssd1677 *epd,
 int uc8279_x4_finish_grey(const struct pbl_display_ssd1677 *epd,
                           const struct pbl_display_buffer *buf);
 int uc8279_x4_probe(const struct pbl_display_ssd1677 *epd);
+int uc8279_x4_start_thread(const struct pbl_display_ssd1677 *epd);
 int uc8279_x4_init(const struct pbl_display_ssd1677 *epd);
 int uc8279_x4_power_off(const struct pbl_display_ssd1677 *epd);
 void uc8279_x4_submit(const struct pbl_display_ssd1677 *epd, const struct pbl_display_buffer *buf,
